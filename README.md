@@ -383,6 +383,35 @@ the question it was asked, and the outcome was silently nothing. The question
 nobody asked was *"is the content I pushed actually on the default branch?"* —
 which is a different question from *"did the push succeed?"*
 
+It is not an isolated shape. Two more from the same family, both on ordinary git
+operations behaving exactly as documented:
+
+- **A merge with `--delete-branch` removed the base branch of a stacked pull
+  request.** The forge closed that PR automatically. No notification, and three
+  independent recovery paths were blocked at once — no retargeting a closed PR,
+  no reopening it without its base, and a publish gate correctly fail-closing on
+  a branch recreated at an already-merged commit.
+- **A push to a just-merged, just-deleted branch silently created it fresh** at a
+  stale base, rather than updating anything.
+
+So the rule generalises past merges: **a successful operation can invalidate work
+that is not part of it.** The merge succeeds, the verification confirms it, the
+branch deletion does precisely what was asked — and something outside the
+transaction is now broken, with nothing responsible for noticing.
+
+### The detection is the interesting half
+
+In every one of these, the evidence was on screen and was not an error.
+
+The second case announced itself as `* [new branch]` in the push output. That is
+not a warning. It is git accurately reporting what it did. The defect is visible
+only if you knew what you expected it to say instead — an *update* to an existing
+branch — and noticed that it said something else.
+
+That is the three-state contract again, one layer out. The information was
+present; nothing was structured to make its absence loud. A check earns its keep
+by knowing what the expected output was, not by scanning for the word "error".
+
 The general rule: **verify the state you wanted, not the success of the operation
 you ran.** `closing-refs.py` exists because of the same gap one level over — a
 merge that reports success while closing none of the issues it names.
