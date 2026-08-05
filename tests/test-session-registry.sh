@@ -146,7 +146,20 @@ sys.exit(0 if os.environ['SID'] in d else 1)
 # through the file rather than a second hook run is what makes the TIME axis
 # testable at all — otherwise a stale entry needs a 30-minute wait.
 seed_peer() { # <sid> <age_seconds> [repos_json]
-  REG_P="$REG" SID="$1" AGE="$2" REPOS="${3:-{\}}" "$PY" -X utf8 -c "
+  # The default is built on its own line, NOT as `${3:-{\}}`.
+  #
+  # That form — an escaped closing brace inside a parameter expansion — yields
+  # `{}` in bash 4+ and something else in stock macOS bash 3.2, which terminates
+  # the expansion at the escaped brace. The value then reaches python as invalid
+  # JSON, `json.loads` raises, the interpreter exits non-zero, and the registry
+  # is never written. Nothing in the pipeline says a word about it.
+  #
+  # It cost a full CI cycle to find, on the only platform that has bash 3.2, and
+  # the symptom was six assertions in unrelated blocks reporting that the hook had
+  # stopped warning. Two spellings of the same default; one of them portable.
+  local repos="${3:-}"
+  [ -n "$repos" ] || repos='{}'
+  REG_P="$REG" SID="$1" AGE="$2" REPOS="$repos" "$PY" -X utf8 -c "
 import json, os, time
 p = os.environ['REG_P']
 try:
