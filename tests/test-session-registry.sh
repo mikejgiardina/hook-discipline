@@ -158,6 +158,31 @@ d[os.environ['SID']] = {'started': now, 'heartbeat': now - int(os.environ['AGE']
                         'cwd': 'C:/elsewhere', 'repos': json.loads(os.environ['REPOS'])}
 json.dump(d, open(p, 'w', encoding='utf-8'))
 "
+  # === Verify the seed landed, and do it HERE rather than downstream ===
+  # This helper is a precondition for roughly a third of the cases in this file,
+  # and until this check existed it was completely unverified. When seeding
+  # silently failed, every dependent case reported "expected WARNED, got QUIET"
+  # — which reads as a hook that stopped warning, not as a fixture that was never
+  # written. Six failures, all pointing away from the actual fault.
+  #
+  # That is the same shape this whole repository is about, one layer down: the
+  # observable result of "the hook is broken" and "the input never existed" were
+  # identical, so the failures actively misled. Cheap to prevent; expensive to
+  # debug from CI logs on a platform you cannot reproduce locally.
+  #
+  # Hard-exits rather than incrementing `fail`, because every later assertion is
+  # meaningless once the fixture is absent, and a wall of derived failures buries
+  # the real one.
+  if ! REG_P="$REG" SID="$1" "$PY" -X utf8 -c "
+import json, os, sys
+d = json.load(open(os.environ['REG_P'], encoding='utf-8'))
+sys.exit(0 if os.environ['SID'] in d else 1)
+" 2>/dev/null; then
+    echo "  FATAL seed_peer('$1') did not land in $REG"
+    echo "        Every case depending on this peer would report QUIET/NO and look"
+    echo "        like a hook regression. Interpreter used: [${PY:-<empty>}]"
+    exit 1
+  fi
 }
 count_entries() {
   [ -f "$REG" ] || { printf '0'; return; }

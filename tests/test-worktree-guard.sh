@@ -227,14 +227,38 @@ if [ -f "$REG" ] && grep -q 'sess-abc123' "$REG" 2>/dev/null && grep -q 'heartbe
 else
   echo "  FAIL  S1 registry not written — the cross-session warning would go blind"; fail=$((fail+1))
 fi
-if [ -f "$REG" ] && "$(command -v python3 || command -v python)" -X utf8 -c "
-import json,sys
+# The expected key is asked of GIT, not assembled from the fixture path.
+#
+# The hook records `git rev-parse --show-toplevel`, and that is a CANONICAL path:
+# git resolves symlinks and expands short names. A fixture path does not
+# necessarily survive that round trip, and where it does not, comparing the two
+# literally tests the platform's path spelling rather than whether the repo was
+# recorded at all.
+#
+# Two real instances, neither reproducible on Linux, which is why this passed
+# locally and on one CI leg while failing on the other two:
+#   macOS   — `mktemp -d` yields /var/folders/..., and /var is a symlink to
+#             /private/var, so git reports /private/var/folders/...
+#   Windows — a runner temp path can carry an 8.3 short name (RUNNER~1) while
+#             git reports the long form.
+EXPECT_TOP="$(git -C "$CLEAN" rev-parse --show-toplevel 2>/dev/null | tr -d '\r')"
+if [ -z "$EXPECT_TOP" ]; then
+  echo "  FAIL  S2 could not resolve the fixture repo's toplevel — assertion would be vacuous"; fail=$((fail+1))
+elif [ -f "$REG" ] && EXPECT_TOP="$EXPECT_TOP" "$(command -v python3 || command -v python)" -X utf8 -c "
+import json,os,sys
+want=os.environ['EXPECT_TOP']
 d=json.load(open(sys.argv[1],encoding='utf-8'))
-sys.exit(0 if any('$CLEAN_W' in (v.get('repos') or {}) for v in d.values() if isinstance(v,dict)) else 1)
+keys=[k for v in d.values() if isinstance(v,dict) for k in (v.get('repos') or {})]
+# Compare case-insensitively with separators normalised: Windows paths are
+# case-insensitive and git may report a different drive-letter case than the
+# shell used. Falling back to a basename match would make the assertion pass for
+# any repo at all, so it is deliberately not done.
+n=lambda p: p.replace('\\\\','/').rstrip('/').lower()
+sys.exit(0 if any(n(k)==n(want) for k in keys) else 1)
 " "$REG" 2>/dev/null; then
   echo "  PASS  S2 the touched repo is recorded per-session"; pass=$((pass+1))
 else
-  echo "  FAIL  S2 repo path missing from the registry entry"; fail=$((fail+1))
+  echo "  FAIL  S2 repo path missing from the registry entry (wanted $EXPECT_TOP)"; fail=$((fail+1))
 fi
 
 # --- F. payload shape --------------------------------------------------------
