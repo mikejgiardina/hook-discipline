@@ -76,7 +76,22 @@ fi
 # Parse + resolve the target repo. python prints exactly one of: NOTCOMMIT (proven
 # not a git commit), the repo dir, or empty. Its exit code separates a clean run
 # from a crash.
-RESULT=$(SECRETS_PAYLOAD="$PAYLOAD" "$PY" -X utf8 - 2>/dev/null <<'PY'
+# === Why the source goes into a variable instead of straight down a pipe ===
+# The obvious form is `RESULT=$("$PY" - <<'PY' ... PY)` — a heredoc feeding a
+# command inside a command substitution. Every bash 4+ parses it. **Stock macOS
+# ships bash 3.2, whose parser cannot handle a heredoc nested inside `$( )`.**
+#
+# The failure is worth describing because it does not point at itself: bash 3.2
+# reports a syntax error on an EARLIER line, near whichever token it choked on
+# while unwinding — here, an innocent and correctly-quoted string several lines
+# above the actual heredoc. Reading that message leads you to rewrite a line that
+# was never wrong.
+#
+# `read -r -d ''` takes the heredoc on a SIMPLE command, which every bash parses,
+# and `-c` then hands the source to python. `read -d ''` returns non-zero when it
+# hits EOF without the delimiter — which is always, here — so `|| true` is
+# required and is not defensive clutter.
+IFS='' read -r -d '' PY_RESOLVE_TARGET <<'PY' || true
 import os, re, json
 raw = os.environ.get("SECRETS_PAYLOAD", "")
 try:
@@ -99,7 +114,8 @@ if not target:
     target = d.get("cwd", "") or "."
 print(target)
 PY
-)
+
+RESULT=$(SECRETS_PAYLOAD="$PAYLOAD" "$PY" -X utf8 -c "$PY_RESOLVE_TARGET" 2>/dev/null)
 PYRC=$?
 RESULT=$(printf '%s' "$RESULT" | tr -d '\r\n')   # defend against Windows CRLF on python stdout
 
@@ -129,7 +145,8 @@ if [ -n "$SECRETS" ]; then
   # python is guaranteed present here (it answered --version above) -> json.dumps
   # for safe escaping of the file list + path. If it somehow yields nothing, fall
   # back to a plain deny so a detected secret is NEVER allowed through (fail closed).
-  DENY=$(SECRETS_REASON="$REASON" "$PY" -X utf8 - 2>/dev/null <<'PY'
+  # Same bash 3.2 constraint as above: no heredoc inside $( ).
+  IFS='' read -r -d '' PY_DENY <<'PY' || true
 import os, json
 reason = os.environ.get("SECRETS_REASON", "Secrets detected in staged files.")
 print(json.dumps({
@@ -140,7 +157,8 @@ print(json.dumps({
   }
 }))
 PY
-)
+
+  DENY=$(SECRETS_REASON="$REASON" "$PY" -X utf8 -c "$PY_DENY" 2>/dev/null)
   if [ -n "$DENY" ]; then
     printf '%s\n' "$DENY"
   else

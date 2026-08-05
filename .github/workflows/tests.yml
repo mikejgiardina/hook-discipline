@@ -35,23 +35,30 @@ jobs:
         shell: bash
 
     steps:
-      # MUST run before checkout. The runner images set core.autocrlf, and the
-      # checkout converts line endings on the way into the working tree — on the
-      # Windows and macOS legs, though not on Linux.
+      # Belt and braces, and honestly labelled as such: this step fixed nothing.
       #
-      # The repo's .gitattributes already pins `eol=lf`, and it works: a plain
-      # `git clone` on a machine with core.autocrlf=true produces LF. That was
-      # verified before assuming otherwise. The conversion here happens inside
-      # the checkout action, which is why fixing .gitattributes alone did not.
+      # It was added on a wrong diagnosis, which is worth recording because the
+      # wrong diagnosis was extremely plausible. The first CI run failed two of
+      # three legs — Windows on the CRLF check, macOS on `bash -n` — and "the
+      # checkout is rewriting line endings" explains both at once. It is the
+      # textbook cause, and setting autocrlf before checkout is the textbook fix.
       #
-      # What it looked like, and why it is worth a comment rather than a silent
-      # config line: the same defect surfaced as two unrelated-looking failures.
-      # Git Bash tolerates a stray CR, so the Windows leg parsed every script
-      # fine and only tripped the explicit CRLF check further down. macOS ships
-      # bash 3.2, which does not tolerate it, so that leg died earlier with a
-      # "syntax error near unexpected token" pointing at an innocent line. Linux
-      # passed outright. Two symptoms, three verdicts, one cause — and the
-      # single-platform reading of any one of them is wrong.
+      # It changed nothing, because there were two INDEPENDENT causes and neither
+      # was line-ending conversion:
+      #
+      #   Windows — the CRLF check itself was a false positive. See the step
+      #             below.
+      #   macOS   — a heredoc nested inside `$( )`, which stock bash 3.2 cannot
+      #             parse. A real portability bug in a hook, and the reason this
+      #             matrix has a macOS leg at all.
+      #
+      # The lesson generalises past this file: one explanation covering every
+      # symptom is evidence, not proof, and it is most seductive exactly when
+      # several failures appear at once. What settled it was that the ubuntu leg
+      # PASSED — a genuine conversion would not have spared it.
+      #
+      # Kept because it is free and makes the intent explicit, not because it is
+      # load-bearing. Removing it should not change any result.
       - name: Prevent the checkout from rewriting line endings
         run: |
           git config --global core.autocrlf false
@@ -80,16 +87,43 @@ jobs:
           done
           exit $rc
 
-      # Guards the LF requirement in .gitattributes. A CRLF script fails on
-      # macOS and Linux with `bad interpreter: ...^M`, and the point of checking
-      # it here is that the failure is otherwise discovered by whoever clones
-      # next rather than by the person who introduced it.
+      # Guards the LF requirement in .gitattributes. A CRLF script fails on macOS
+      # and Linux with `bad interpreter: ...^M`, and checking it here means the
+      # failure lands on whoever introduced it rather than whoever clones next.
+      #
+      # Deliberately NOT `grep -rlU $'\r' ...`, which is what this step used to
+      # be. On the Windows leg that reported EVERY file in the repository as
+      # containing a carriage return, on a tree with none. Reproduced locally
+      # against a fresh clone and pinned down: `-l` lists a file as matching
+      # while `-n` on the same file finds no matching line, so the flag is
+      # provably lying. It misbehaves only on the RECURSIVE form — the identical
+      # pattern against an explicit file list is correct and does detect a
+      # genuinely planted CR. GNU grep 3.0 as shipped with Git for Windows, the
+      # same build that aborts outright on `-i -F` combined.
+      #
+      # A guard that fires on a clean tree is not a stricter guard. It is the
+      # mirror image of one that never fires: both are uninformative, and this
+      # one additionally teaches you to ignore it. Read the bytes instead — and
+      # note the empty-file-list check, so that a glob which stops matching
+      # cannot turn this into a step that passes by scanning nothing.
       - name: Reject CRLF in scripts
         run: |
-          bad="$(grep -rlU $'\r' hooks lib tests tools --include='*.sh' --include='*.py' || true)"
-          if [ -n "$bad" ]; then
-            echo "CRLF line endings found:"; echo "$bad"; exit 1
-          fi
+          python - <<'EOF'
+          import glob, io, sys
+          pats = ('hooks/*.sh', 'lib/*.sh', 'lib/*.py', 'tests/*.sh',
+                  'tests/lib/*.sh', 'tools/*.py')
+          files = sorted(f for p in pats for f in glob.glob(p))
+          if not files:
+              sys.exit("no scripts matched -- the check would pass vacuously")
+          bad = [f for f in files if b'\r' in io.open(f, 'rb').read()]
+          print("scanned %d file(s)" % len(files))
+          if bad:
+              print("CRLF line endings found:")
+              for f in bad:
+                  print("  " + f)
+              sys.exit(1)
+          print("all LF")
+          EOF
 
       - name: closing-refs self-test
         run: python tools/closing-refs.py --self-test
