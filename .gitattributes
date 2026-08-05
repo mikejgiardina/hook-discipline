@@ -1,0 +1,17 @@
+# LF endings are not a style preference here — they are a correctness
+# requirement. A Windows checkout that ships CRLF gives every script a trailing
+# carriage return on its shebang line, and the failure on macOS or Linux reads
+# as `bad interpreter: /usr/bin/env bash^M`, which is a confusing way to learn
+# that a hook was never going to run.
+# The catch-all comes FIRST and is the load-bearing line. An extension list alone
+# leaves every extensionless file — LICENSE, NOTICE, .gitignore, this file — outside
+# the rule, which is the same one-half-of-a-pair gap the README describes: each
+# listed pattern is correct, and the defect is the entry that was never written.
+* text=auto eol=lf
+
+# Explicit anyway, so the intent survives someone narrowing the catch-all.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf

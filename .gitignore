@@ -1,0 +1,14 @@
+# Runtime state written by hooks/session-registry.sh. Machine-local by nature —
+# it records live session IDs and per-repo activity for THIS box, so committing
+# it would mean shipping one machine's transient state to every other one.
+.session-registry.json
+.session-registry.json.tmp.*
+
+# Your real term registry. hooks/term-scan.sh reads HOOK_TERM_REGISTRY; keep the
+# file itself outside this repo. A list of terms you do not want published is
+# itself a document describing what you consider sensitive.
+terms.json
+terms.local.json
+
+__pycache__/
+*.pyc

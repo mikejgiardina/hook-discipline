@@ -1,0 +1,76 @@
+name: tests
+
+# Three platforms, because portability is the claim this repo makes.
+#
+# A single-platform run would be actively misleading here: the whole argument is
+# that a hook which assumes one platform does not error on the others, it
+# no-ops quietly. Testing on one platform would reproduce that failure at the CI
+# layer — a green badge that proves the suite ran somewhere, which is exactly the
+# kind of evidence this repository argues against accepting.
+#
+# The Windows leg runs under Git Bash (shell: bash on windows-latest), which is
+# the environment several of these findings came from: the App-Execution-Alias
+# python3 stub, the GNU grep 3.0 `-i -F` abort, and the `mktemp -d` path form.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hooks:
+    name: hooks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The suite builds throwaway git repos and commits into them, so it needs
+      # an identity. Without this, git refuses the commit and every fixture-based
+      # case fails for a reason unrelated to what it is testing.
+      - name: Configure git identity for fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name  "CI"
+          git config --global init.defaultBranch main
+
+      - name: Verify all scripts parse
+        run: |
+          rc=0
+          for f in hooks/*.sh lib/*.sh tests/*.sh tests/lib/*.sh; do
+            bash -n "$f" || { echo "PARSE FAIL: $f"; rc=1; }
+          done
+          exit $rc
+
+      # Guards the LF requirement in .gitattributes. A CRLF script fails on
+      # macOS and Linux with `bad interpreter: ...^M`, and the point of checking
+      # it here is that the failure is otherwise discovered by whoever clones
+      # next rather than by the person who introduced it.
+      - name: Reject CRLF in scripts
+        run: |
+          bad="$(grep -rlU $'\r' hooks lib tests tools --include='*.sh' --include='*.py' || true)"
+          if [ -n "$bad" ]; then
+            echo "CRLF line endings found:"; echo "$bad"; exit 1
+          fi
+
+      - name: closing-refs self-test
+        run: python tools/closing-refs.py --self-test
+
+      - name: Run hook test suite
+        run: bash tests/run-all.sh

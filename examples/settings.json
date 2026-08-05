@@ -1,0 +1,96 @@
+{
+  "_comment": [
+    "Wiring example for Claude Code. Copy the `hooks` block into your",
+    ".claude/settings.json and adjust paths to where you put this repo.",
+    "",
+    "Two conventions here are load-bearing rather than stylistic:",
+    "",
+    "1. Hooks are invoked via $CLAUDE_PROJECT_DIR, never an absolute path. That",
+    "   variable is set in the hook execution environment and resolves to the",
+    "   project root on every machine. A drive letter or a home directory in this",
+    "   file is a hook that silently no-ops for everyone but its author.",
+    "",
+    "2. Note which hooks are wrapped in `|| true` and which are NOT. The wrapper",
+    "   discards the hook's exit code. That is correct for an advisory hook and",
+    "   WRONG for a blocking one -- a fail-closed check whose exit code is thrown",
+    "   away is not fail-closed, it is decorative. The blocking hooks here signal",
+    "   a denial through stdout JSON (permissionDecision: deny) at exit 0 for",
+    "   exactly this reason, so they survive the wrapper either way. Suppressing",
+    "   stderr with 2>/dev/null has the same shape of hazard: anything you want",
+    "   the operator to actually read has to go to stdout, or it is discarded",
+    "   along with the noise you meant to suppress.",
+    "",
+    "tests/run-all.sh reads THIS file to derive wiring coverage -- which wired",
+    "hooks have a test file. Point it at your own settings to get the same",
+    "report for your live layer:",
+    "",
+    "    WIRING=~/.claude/settings.json bash tests/run-all.sh"
+  ],
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/secrets-scan.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/skip-ci-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/worktree-guard.sh\""
+          }
+        ]
+      }
+    ],
+
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/term-scan.sh\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" register 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" heartbeat 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" deregister 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

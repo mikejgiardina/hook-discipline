@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "EXAMPLE REGISTRY — every entry here is fictional and exists only so that",
+    "hooks/term-scan.sh and tests/test-term-scan.sh are runnable out of the box.",
+    "",
+    "Your real registry does not belong in a public repository. Keep it in a",
+    "private repo or outside version control entirely, and point the hook at it:",
+    "",
+    "    HOOK_TERM_REGISTRY=/path/to/private/terms.json",
+    "",
+    "Note what the schema implies about the threat model: a registry of terms you",
+    "do not want published is itself a document describing what you consider",
+    "sensitive. Publishing the list to protect the list is self-defeating. The",
+    "scanner is the reusable part; the vocabulary is yours."
+  ],
+
+  "terms": [
+    {
+      "term": "Project Vanadium",
+      "aliases": ["Vanadium programme", "the Vanadium initiative"],
+      "reason": "Internal codename for an unannounced product line.",
+      "suggest": "the platform"
+    },
+    {
+      "term": "adaptive flux weighting",
+      "aliases": ["flux-weighted adaptation", "AFW"],
+      "reason": "Names a specific unpublished technique.",
+      "suggest": "the weighting step"
+    },
+    {
+      "term": "QQ_",
+      "aliases": ["ZZ_"],
+      "reason": "Internal component-namespace prefixes. Leaking these leaks the shape of the internal architecture even when no single name is meaningful on its own.",
+      "suggest": "omit entirely"
+    },
+    {
+      "term": "northstar-ingest",
+      "aliases": ["northstar ingest pipeline"],
+      "reason": "Internal service name that appears in no public documentation.",
+      "suggest": "the ingest service"
+    }
+  ]
+}
