@@ -35,6 +35,28 @@ jobs:
         shell: bash
 
     steps:
+      # MUST run before checkout. The runner images set core.autocrlf, and the
+      # checkout converts line endings on the way into the working tree — on the
+      # Windows and macOS legs, though not on Linux.
+      #
+      # The repo's .gitattributes already pins `eol=lf`, and it works: a plain
+      # `git clone` on a machine with core.autocrlf=true produces LF. That was
+      # verified before assuming otherwise. The conversion here happens inside
+      # the checkout action, which is why fixing .gitattributes alone did not.
+      #
+      # What it looked like, and why it is worth a comment rather than a silent
+      # config line: the same defect surfaced as two unrelated-looking failures.
+      # Git Bash tolerates a stray CR, so the Windows leg parsed every script
+      # fine and only tripped the explicit CRLF check further down. macOS ships
+      # bash 3.2, which does not tolerate it, so that leg died earlier with a
+      # "syntax error near unexpected token" pointing at an innocent line. Linux
+      # passed outright. Two symptoms, three verdicts, one cause — and the
+      # single-platform reading of any one of them is wrong.
+      - name: Prevent the checkout from rewriting line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
