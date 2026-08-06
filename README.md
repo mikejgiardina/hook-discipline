@@ -17,6 +17,64 @@ Everything below follows from taking that seriously.
 
 ---
 
+## What's in here
+
+Each line is the claim, not just the topic — so this doubles as the summary if
+you read nothing else. The sections themselves go into why, with the incidents
+that produced them.
+
+**The argument**
+
+- [The three-state exit contract](#the-three-state-exit-contract) — "could not
+  check" has to be a *state*, not an absence. A hook that was never installed
+  reports exactly what a clean run reports.
+- [Fail-open, fail-closed, and fail-silent are three decisions, not two](#fail-open-fail-closed-and-fail-silent-are-three-decisions-not-two)
+  — fail-silent is orthogonal to the other two, and it is almost always wrong.
+- [Know what your gate actually asserts](#know-what-your-gate-actually-asserts)
+  — "the term scan passed" means no term leaked. It does not mean the numbers
+  are right.
+- [A guard that fires on prose is worse than no guard](#a-guard-that-fires-on-prose-is-worse-than-no-guard)
+  — false-positive rate scales with how often you write *about* the thing you
+  guard, and the override reflex is the real cost.
+
+**Testing checks that are silent by design**
+
+- [A passing test is not evidence that the check ran](#a-passing-test-is-not-evidence-that-the-check-ran)
+  — every quiet case is paired with a control. Verify it yourself: neuter a hook
+  and watch which cases survive.
+- [A skipped case is a case that did not run](#a-skipped-case-is-a-case-that-did-not-run)
+- [Tests that pass without ever reaching their subject](#tests-that-pass-without-ever-reaching-their-subject)
+  — fixtures inside the tree under test, and a suite that ran against a real
+  production system while reporting green.
+- [An escape hatch can route around the test's own interposition](#an-escape-hatch-can-route-around-the-tests-own-interposition)
+- [When you fix an instance, enumerate the pair](#when-you-fix-an-instance-enumerate-the-pair)
+  — the hardest defect to see is a *missing* line: a fix that landed on one of
+  two identical surfaces.
+
+**Portability, and the shell**
+
+- [Cross-platform, because silence is portable and shell is not](#cross-platform-because-silence-is-portable-and-shell-is-not)
+  — `command -v` proves a name resolves, not that it runs; plus the Windows and
+  macOS specifics that cost the most.
+- [The shell mechanic that kills hooks quietly](#the-shell-mechanic-that-kills-hooks-quietly)
+  — `set -euo pipefail` + a no-match `grep` kills the script on the *assignment*
+  line.
+
+**The code**
+
+- [What's here](#whats-here) — file-by-file map.
+- [`tools/closing-refs.py` is useful on its own](#toolsclosing-refspy-is-useful-on-its-own)
+  — GitHub silently drops several closing-keyword forms that look correct.
+- [A sibling failure this repo documents but does not check](#a-sibling-failure-this-repo-documents-but-does-not-check)
+  — verify the state you wanted, not the success of the operation you ran. And
+  [why the detection is the interesting half](#the-detection-is-the-interesting-half).
+- [Using these](#using-these) · [why `term-scan.sh` ships without its registry](#term-scansh-ships-without-its-registry-on-purpose)
+- [Longer write-ups](#longer-write-ups) · [Status and scope](#status-and-scope) · [License](#license)
+
+Sections are self-contained; skipping around costs nothing.
+
+---
+
 ## The three-state exit contract
 
 Most checks are written as if they have two outcomes: pass or fail. That model
