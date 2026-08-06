@@ -96,7 +96,23 @@ echo "C. the parsing corpus, run in-process"
 # would give two corpora to keep in step, and the one that drifts silently is the
 # one nobody edits. The exit code is the assertion.
 CORPUS_OUT="$("$PY" -X utf8 "$CR" --self-test 2>&1)"; CORPUS_RC=$?
-printf '%s\n' "$CORPUS_OUT" | sed -n 's/^  \(PASS\|FAIL\)/  \1/p'
+# `grep -E`, NOT `sed -n 's/^  \(PASS\|FAIL\)/.../p'`.
+#
+# `\|` alternation in a basic regular expression is a GNU sed extension. BSD sed,
+# which is what stock macOS ships, does not support it — the substitution simply
+# never matches and the line emits nothing. No error, no warning, exit 0.
+#
+# The consequence was measured, not guessed: this re-emission is what makes the
+# corpus cases visible to the runner's assertion count, so on macOS the suite
+# reported 25 assertions where the other two platforms reported 44. Nineteen
+# assertions vanished from a GREEN run, with the corpus itself still executing
+# correctly — only its evidence was lost.
+#
+# It also violated this repository's own portability rule, which says in as many
+# words: no GNU-only sed without a fallback. Worth stating plainly rather than
+# quietly fixing, because the rule was written down, was correct, and was still
+# broken here — and nothing in the suite was capable of noticing.
+printf '%s\n' "$CORPUS_OUT" | grep -E '^  (PASS|FAIL)' || true
 if [ "$CORPUS_RC" -eq 0 ]; then
   echo "  PASS  C-all the corpus self-test exits 0"; pass=$((pass+1))
 else

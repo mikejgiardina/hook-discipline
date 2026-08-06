@@ -52,6 +52,19 @@ QUIET=0
 ran=0; failed=0; gaps=0; skips=0
 FAILED_FILES=""
 SKIPPED_FILES=""
+FLOORS="$TESTS_DIR/suite-floors.tsv"
+SHORTFALL=""
+
+# Read a suite's declared floor. Absent floor -> empty, and that is reported
+# rather than treated as zero: a suite with no floor is unguarded, which is a
+# different thing from a suite whose floor is satisfied.
+floor_for() { # <suite basename>
+  [ -f "$FLOORS" ] || return 0
+  while IFS="$(printf '\t')" read -r name value; do
+    case "$name" in ''|\#*) continue ;; esac
+    [ "$name" = "$1" ] && { printf '%s' "$value"; return 0; }
+  done < "$FLOORS"
+}
 
 for t in "$TESTS_DIR"/test-*.sh; do
   [ -f "$t" ] || continue
@@ -82,6 +95,24 @@ for t in "$TESTS_DIR"/test-*.sh; do
     fi
     [ "$g" -gt 0 ] && printf '  (%s known gap(s))' "$g"
     [ "$s" -gt 0 ] && printf '  [%s SKIPPED]' "$s"
+
+    # --- the floor invariant -------------------------------------------------
+    # assertions + explicit skips >= the measured floor.
+    #
+    # An exit-0 suite that quietly stopped running half its cases is otherwise
+    # indistinguishable from one that ran them all, because the only difference
+    # is a number with nothing to compare it to. This gives it something.
+    fl="$(floor_for "$name")"
+    acct=$((p + s))
+    if [ -z "$fl" ]; then
+      printf '  {NO FLOOR}'
+      SHORTFALL="$SHORTFALL $name:unguarded"
+    elif [ "$acct" -lt "$fl" ]; then
+      printf '  ** ACCOUNTED %s < FLOOR %s **' "$acct" "$fl"
+      failed=$((failed+1))
+      FAILED_FILES="$FAILED_FILES $name"
+      SHORTFALL="$SHORTFALL $name:$acct/$fl"
+    fi
     printf '\n'
     if [ "$QUIET" -eq 0 ]; then
       printf '%s\n' "$out" | grep '^  GAP '  | sed 's/^/      /'
@@ -158,6 +189,12 @@ if [ "$skips" -gt 0 ]; then
   # here" identical at a glance.
   echo "skipped by file:$SKIPPED_FILES"
   echo "(a skip is an assertion that did NOT execute — check it is skipping for the reason you expect)"
+fi
+if [ -n "$SHORTFALL" ]; then
+  echo "coverage shortfall:$SHORTFALL"
+  echo "(a suite below its floor stopped accounting for cases it used to run —"
+  echo " either they vanished, or a block-level skip is standing in for several."
+  echo " Emit one SKIP per skipped case, or re-measure the floor deliberately.)"
 fi
 if [ "$failed" -gt 0 ]; then
   echo "failing:$FAILED_FILES"

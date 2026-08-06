@@ -1,0 +1,43 @@
+# suite-floors.tsv — the minimum number of cases each suite must ACCOUNT FOR.
+#
+# Enforced by run-all.sh as:
+#
+#     assertions_made + cases_explicitly_skipped  >=  floor
+#
+# === Why a floor, when the suites already report pass/fail ===
+# A suite that silently stops running half its cases still exits 0. It prints
+# fewer PASS lines, the runner prints "ok", and the only trace is a number
+# nobody has a reason to compare against anything. Every other check in this
+# repository is about that shape; this is the same check pointed at the suites
+# themselves.
+#
+# It is not hypothetical here. Before this file existed, one suite reported 44
+# cases on two platforms and 25 on the third, in a fully green run, because a
+# GNU-only `sed` construct emitted nothing under BSD sed. Nineteen assertions
+# disappeared and every signal stayed green.
+#
+# === Why `+ skipped`, and why a bare SKIP counts as exactly ONE ===
+# A case that genuinely cannot run on a platform — no cygpath, no python-free
+# PATH, not a drive-form path — is legitimate. It just has to SAY so. Counting
+# skips keeps such a suite passing while making the skip visible.
+#
+# The counting rule is what stops that being a loophole: one SKIP line counts as
+# one case. A block-level skip standing in for three assertions therefore fails
+# the floor, and the fix is to emit one SKIP per skipped case — which is also the
+# honest thing to print. Coverage that moves platform to platform should be
+# legible, not summarised.
+#
+# === These numbers are MEASURED, not estimated ===
+# Each is the observed `assertions + skips` from a full run. Raise one only after
+# adding cases and re-measuring. Lowering one is a coverage decision and wants a
+# sentence in the commit message saying which cases went and why.
+#
+# Format: <suite filename><TAB><floor>
+test-closing-refs.sh	44
+test-payload-contract.sh	18
+test-resolve-python.sh	17
+test-secrets-scan.sh	22
+test-session-registry.sh	41
+test-skip-ci-guard.sh	26
+test-term-scan.sh	18
+test-worktree-guard.sh	34

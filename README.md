@@ -43,6 +43,7 @@ that produced them.
   — every quiet case is paired with a control. Verify it yourself: neuter a hook
   and watch which cases survive.
 - [A skipped case is a case that did not run](#a-skipped-case-is-a-case-that-did-not-run)
+  and [the floor that makes counting mean something](#the-floor-a-suite-has-to-account-for-its-cases)
 - [Tests that pass without ever reaching their subject](#tests-that-pass-without-ever-reaching-their-subject)
   — fixtures inside the tree under test, and a suite that ran against a real
   production system while reporting green.
@@ -240,6 +241,37 @@ So `run-all.sh` counts skips, prints them per file, and lists them in the summar
 on every green run. **Honest limitation:** it reports skips per run, so it cannot
 tell you a case skipped on *every* platform and therefore ran nowhere. Reading
 the three CI legs together is still a manual step.
+
+### The floor: a suite has to account for its cases
+
+Counting is not enough on its own. A suite that quietly stops running half its
+cases still exits 0, still prints `ok`, and differs only by a number nobody has
+anything to compare against.
+
+[`tests/suite-floors.tsv`](tests/suite-floors.tsv) gives it something. The
+runner enforces, per suite:
+
+```
+assertions_made + cases_explicitly_skipped  >=  measured floor
+```
+
+The `+ skipped` term is the design. A case that genuinely cannot run here — no
+`cygpath`, no python-free `PATH`, not a drive-form path — is legitimate; it just
+has to *say so*, and is then visible rather than absent. And **a bare `SKIP`
+counts as exactly one case**, so a block-level skip standing in for three
+assertions fails the floor. The fix is to emit one `SKIP` per skipped case, which
+is also the more honest thing to print.
+
+This is not hypothetical. It was added after a suite reported **44 cases on two
+platforms and 25 on the third, in a fully green run** — a GNU-only `sed`
+construct emitted nothing under BSD sed, so nineteen assertions vanished while
+the corpus behind them still executed correctly. Only their evidence was lost,
+and nothing was in a position to notice.
+
+That bug also broke this repository's own stated portability rule, which says in
+as many words: no GNU-only `sed` without a fallback. The rule was written down,
+was correct, and was still violated — which is the argument for a check rather
+than a convention.
 
 ### Tests that pass without ever reaching their subject
 

@@ -322,7 +322,21 @@ case "$DIRTY" in
       echo "  FAIL  W MSYS-path session absent from the registry — invisible to peers"; fail=$((fail+1))
     fi
     ;;
-  *) echo "  SKIP  W MSYS-path cases (fixture root is not drive-form)"; skip=$((skip+1)) ;;
+  *)
+    # ONE SKIP LINE PER SKIPPED ASSERTION, not one for the block.
+    #
+    # This branch stands in for three assertions. Emitting a single SKIP for all
+    # of them makes the suite's total silently platform-dependent: 34 on Windows
+    # where they run, 32 elsewhere where one line replaces three. The runner's
+    # floor check treats a bare SKIP as exactly one case — deliberately, so that
+    # a block-level skip standing in for many cannot balance the books.
+    #
+    # Per-case skips keep `assertions + skips` invariant across platforms, which
+    # is what makes a drop in that sum mean something.
+    echo "  SKIP  W MSYS path form (git -C) — fixture root is not drive-form"; skip=$((skip+1))
+    echo "  SKIP  W MSYS path form (leading cd) — fixture root is not drive-form"; skip=$((skip+1))
+    echo "  SKIP  W MSYS-path session recorded — fixture root is not drive-form"; skip=$((skip+1))
+    ;;
 esac
 
 # --- X. the missing-dependency branch must be LOUD --------------------------
