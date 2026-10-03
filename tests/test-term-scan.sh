@@ -162,6 +162,23 @@ out="$(printf '{}' | HOOK_TERM_REGISTRY="$REG" bash "$HOOK" 2>/dev/null)"; rc=$?
 check "9  empty payload exits 0" "0" "$rc"
 check "9b empty payload silent"  "QUIET" "$(verdict "$out")"
 
+# --- 11. blind scans announce themselves --------------------------------------
+# A registry that parses but yields no terms, or a term scan that cannot run,
+# would otherwise read as "no hits". Each blind case is paired with the same file
+# warning once the blindness is removed, so 11a/11c cannot pass on a hook that
+# simply went quiet.
+blind() { if printf '%s' "$1" | grep -q 'could not scan'; then printf 'BLIND'; else printf 'NOT-BLIND'; fi; }
+printf '{\n  "terms": []\n}\n' > "$FIX/empty-terms.json"
+check "11a registry with zero terms -> announced" "BLIND" \
+      "$(blind "$(run_hook "$FIX/public/hit.md" "$FIX/empty-terms.json")")"
+check "11b CONTROL real registry -> the same file warns" "WARN" \
+      "$(verdict "$(run_hook "$FIX/public/hit.md")")"
+mkdir -p "$FIX/shadow"; printf '#!/usr/bin/env bash\nexit 127\n' > "$FIX/shadow/awk"; chmod +x "$FIX/shadow/awk"
+check "11c term scan cannot run (awk broken) -> announced" "BLIND" \
+      "$(blind "$(payload "$FIX/public/hit.md" | PATH="$FIX/shadow:$PATH" HOOK_TERM_REGISTRY="$REG" bash "$HOOK" 2>/dev/null)")"
+check "11d CONTROL a whitespace-only file is quiet, not blind" "NOT-BLIND" \
+      "$(mk "$FIX/public/blank.md" "  "; blind "$(run_hook "$FIX/public/blank.md")")"
+
 # --- 10. nonexistent file ---------------------------------------------------
 check "10 nonexistent path quiet" "QUIET" "$(verdict "$(run_hook "$FIX/public/ghost.md")")"
 

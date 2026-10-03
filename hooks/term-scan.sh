@@ -121,25 +121,55 @@ TERMS=$(printf '%s\n%s\n' "${TERMS}" "${ALIASES}" | sed '/^[[:space:]]*$/d' | so
 # NOTE on grep: GNU grep 3.0 as shipped with Git for Windows ABORTS (SIGABRT)
 # when `-i` and `-F` are combined. The workaround is to case-fold the haystack
 # and the needle separately with `tr`, then use `-F` without `-i`.
-FILE_LC=$(tr '[:upper:]' '[:lower:]' < "${FILE}" 2>/dev/null)
+#
+# "Found nothing" is only a clean result if the scan could see. A registry that
+# parses but yields no terms, a file `tr` cannot read, and a term scan that
+# cannot run are all announced rather than passed as clean.
+cannot_scan() {
+  echo ""
+  echo "TERM-SCAN could not scan ${FILE} ($1). NOT a clean result."
+  echo ""
+  exit 0
+}
+[ -n "${TERMS}" ] || cannot_scan "the term registry yielded 0 terms"
+FILE_LC=$(tr '[:upper:]' '[:lower:]' < "${FILE}" 2>/dev/null) \
+  || cannot_scan "the file could not be read"
 
-HITS=0
+# ONE awk pass, not a loop per term. The loop forked about five processes per
+# term (case-folding the term, then `printf | grep | head`), so the cost grew
+# with the registry. On a loaded Windows box, where a single fork can take
+# hundreds of milliseconds, that was enough for hooks that run on every write to
+# pile up into fork exhaustion. The semantics are unchanged: for each term in sorted order, the
+# FIRST matching line of the case-folded file, as a fixed string, reported as
+# `  - <term>  <n>:<line>`.
+#   * Terms are case-folded with the SAME `tr` as the file, in one call, so
+#     the two sides cannot fold differently.
+#   * index() is a fixed-string match, which is what `grep -F` was; LC_ALL=C
+#     keeps it byte-wise.
+#   * Terms travel through ENVIRON, which (unlike `awk -v`) does not interpret
+#     backslashes.
+TERMS_LC=$(printf '%s\n' "${TERMS}" | tr '[:upper:]' '[:lower:]')
+SCAN=$(printf '%s\n' "${FILE_LC}" | TS_T="${TERMS}" TS_TL="${TERMS_LC}" LC_ALL=C awk '
+  BEGIN { nt = split(ENVIRON["TS_T"], t, "\n"); split(ENVIRON["TS_TL"], tl, "\n") }
+  { line[NR] = $0 }
+  END {
+    hits = 0; out = ""
+    for (i = 1; i <= nt; i++) {
+      o = t[i]; l = tl[i]
+      sub(/\r$/, "", o); sub(/\r$/, "", l)
+      sub(/^ /, "", o);  sub(/^ /, "", l)
+      sub(/ $/, "", o);  sub(/ $/, "", l)
+      if (o == "") continue
+      for (n = 1; n <= NR; n++) {
+        if (index(line[n], l)) { out = out "\n  - " o "  " n ":" line[n]; hits++; break }
+      }
+    }
+    printf "%d%s", hits, out
+  }' 2>/dev/null)
+HITS="${SCAN%%$'\n'*}"
+case "${HITS}" in ''|*[!0-9]*) cannot_scan "the term scan failed to run" ;; esac
 HITLIST=""
-while IFS= read -r TERM; do
-  TERM="${TERM%$'\r'}"
-  TERM="${TERM# }"
-  TERM="${TERM% }"
-  [ -z "${TERM}" ] && continue
-  TERM_LC=$(printf '%s' "${TERM}" | tr '[:upper:]' '[:lower:]')
-  LINE=$(printf '%s' "${FILE_LC}" | grep -F -n -m1 -- "${TERM_LC}" 2>/dev/null | head -1 || true)
-  if [ -n "${LINE}" ]; then
-    HITS=$((HITS + 1))
-    HITLIST="${HITLIST}
-  - ${TERM}  ${LINE}"
-  fi
-done <<EOF
-${TERMS}
-EOF
+[ "${HITS}" -gt 0 ] && HITLIST=$'\n'"${SCAN#*$'\n'}"
 
 if [ "${HITS}" -gt 0 ]; then
   # STDOUT, not stderr. A common wiring pattern sends hook stderr to /dev/null to

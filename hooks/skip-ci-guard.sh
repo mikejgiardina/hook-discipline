@@ -56,7 +56,10 @@
 set -uo pipefail
 
 if command -v timeout >/dev/null 2>&1; then
-  PAYLOAD=$(timeout 2 cat 2>/dev/null || echo "")
+  # A timeout exiting neither 0 nor 124 is not GNU coreutils and never read stdin
+  # (Windows' System32 timeout.exe exits 1): read stdin directly instead of
+  # continuing with an empty payload, which every guard would read as "allow".
+  PAYLOAD=$(timeout 2 cat 2>/dev/null) || { _trc=$?; [ "$_trc" -eq 124 ] || PAYLOAD=$(cat 2>/dev/null || echo ""); }
 else
   PAYLOAD=$(cat 2>/dev/null || echo "")
 fi

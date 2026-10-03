@@ -361,6 +361,16 @@ back in the failure mode above. The findings that cost the most:
   Case-fold the haystack and the needle separately with `tr`.
 - **Stock macOS has no `timeout`** and ships bash 3.2 — no `declare -A`, no
   `mapfile`, no `${v,,}`. BSD `grep` has no `-oP`.
+- **A `timeout` on PATH is not necessarily GNU's.** Windows ships
+  `System32\timeout.exe`, which prints "Invalid syntax" and exits 1 without
+  touching stdin. A payload read written as `$(timeout 2 cat || echo "")` turns
+  that into an empty payload, and every guard reads empty as "allow". Treat any
+  exit other than 0 or 124 as "timeout did not run" and read stdin directly;
+  `tests/test-timeout-fallback.sh` pins every read site.
+- **Fork cost is the budget on Git Bash.** A loop that forks a few processes per
+  registry term is invisible on Linux and adds up quickly per file on a
+  loaded Windows box, enough for hooks that fire on every write to pile up. Scan
+  all terms in one `awk` pass; `term-scan.sh` does.
 - **LF line endings**, enforced via `.gitattributes`. A Windows checkout shipping
   CRLF gives `bad interpreter: ...^M` on a Mac.
 
