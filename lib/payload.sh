@@ -44,7 +44,10 @@
 hook_payload() {
   local p=""
   if command -v timeout >/dev/null 2>&1; then
-    p="$(timeout 2 cat 2>/dev/null || echo "")"
+    # A timeout exiting neither 0 nor 124 is not GNU coreutils and never read stdin
+    # (Windows' System32 timeout.exe exits 1): read stdin directly instead of
+    # continuing with an empty payload, which every guard would read as "allow".
+    p="$(timeout 2 cat 2>/dev/null)" || { _trc=$?; [ "$_trc" -eq 124 ] || p="$(cat 2>/dev/null || echo "")"; }
   else
     p="$(cat 2>/dev/null || echo "")"
   fi

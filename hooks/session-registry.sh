@@ -43,7 +43,10 @@ STALE="${HOOK_SESSION_STALE_SECS:-1800}"
 
 # Read stdin; `timeout` if present (Git-Bash/Linux), plain cat on macOS (no `timeout`).
 if command -v timeout >/dev/null 2>&1; then
-  RAW="$(timeout 2 cat 2>/dev/null || echo "")"
+  # A timeout exiting neither 0 nor 124 is not GNU coreutils and never read stdin
+  # (Windows' System32 timeout.exe exits 1): read stdin directly instead of
+  # continuing with an empty payload, which every guard would read as "allow".
+  RAW="$(timeout 2 cat 2>/dev/null)" || { _trc=$?; [ "$_trc" -eq 124 ] || RAW="$(cat 2>/dev/null || echo "")"; }
 else
   RAW="$(cat 2>/dev/null || echo "")"
 fi
