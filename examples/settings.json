@@ -16,9 +16,17 @@
     "   away is not fail-closed, it is decorative. The blocking hooks here signal",
     "   a denial through stdout JSON (permissionDecision: deny) at exit 0 for",
     "   exactly this reason, so they survive the wrapper either way. Suppressing",
-    "   stderr with 2>/dev/null has the same shape of hazard: anything you want",
-    "   the operator to actually read has to go to stdout, or it is discarded",
-    "   along with the noise you meant to suppress.",
+    "   stderr with 2>/dev/null has the same shape of hazard: a hook that exits 0",
+    "   is not read for its stderr, and its plain stdout is not shown to the model",
+    "   for most events. A message that must reach someone belongs in the JSON",
+    "   output (the deny reason, or the event's context/message field), not in",
+    "   free text that is discarded along with the noise you meant to suppress.",
+    "",
+    "3. Every entry carries an explicit `timeout` (seconds). Without one the",
+    "   harness default applies, and a hook that runs past its timeout is treated",
+    "   as a non-blocking error -- for a fail-closed guard that means ALLOW. Size",
+    "   the guards' bound well above their slowest real run on a loaded machine;",
+    "   the advisory hooks can be tighter.",
     "",
     "tests/run-all.sh reads THIS file to derive wiring coverage -- which wired",
     "hooks have a test file. Point it at your own settings to get the same",
@@ -34,15 +42,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/secrets-scan.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/secrets-scan.sh\"",
+            "timeout": 120
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/skip-ci-guard.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/skip-ci-guard.sh\"",
+            "timeout": 120
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/worktree-guard.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/worktree-guard.sh\"",
+            "timeout": 120
           }
         ]
       }
@@ -54,7 +65,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/term-scan.sh\" 2>/dev/null || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/term-scan.sh\" 2>/dev/null || true",
+            "timeout": 60
           }
         ]
       }
@@ -65,7 +77,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" register 2>/dev/null || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" register 2>/dev/null || true",
+            "timeout": 30
           }
         ]
       }
@@ -76,7 +89,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" heartbeat 2>/dev/null || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" heartbeat 2>/dev/null || true",
+            "timeout": 30
           }
         ]
       }
@@ -87,7 +101,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" deregister 2>/dev/null || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/session-registry.sh\" deregister 2>/dev/null || true",
+            "timeout": 30
           }
         ]
       }
