@@ -107,8 +107,8 @@ check "  control: same commit WITHOUT the marker allowed" \
 
 echo
 echo "default-branch commits keep the marker — the churn case the convention exists for"
-check "marker on main is allowed"                   "git commit -m \"chore: restamp $SKIP\"" "$MAIN"   ALLOW
-check "marker on master is allowed"                 "git commit -m \"chore: restamp $SKIP\"" "$MASTER" ALLOW
+check "marker on main is allowed"                   "git commit -m \"chore: update $SKIP\"" "$MAIN"   ALLOW
+check "marker on master is allowed"                 "git commit -m \"chore: update $SKIP\"" "$MASTER" ALLOW
 
 echo
 echo "every GitHub skip token, not just the common one"
@@ -145,6 +145,126 @@ check "a merge command carrying the marker is allowed" \
   "gh pr merge 5 --squash --subject \"t $SKIP (#5)\"" "$FEATURE" ALLOW
 check "unrelated git command"                       'git status' "$FEATURE" ALLOW
 check "commit-ish word in prose"                    "echo 'commit the marker $SKIP later'" "$FEATURE" ALLOW
+
+echo
+echo "git global options before the subcommand are still a commit (#2)"
+# A global that takes a separate argument (-C <dir>, -c <k=v>, --git-dir <dir>)
+# used to stop the match: the argument is not a flag, so the scan never reached
+# `commit` and the call was allowed without being checked.
+check "-C <feature repo> commit, from a main-branch cwd, is denied" \
+  "git -C $FEATURE commit -m \"x $SKIP\"" "$MAIN" DENY
+check "-c <key=value> commit on a feature branch is denied" \
+  "git -c user.name=t commit -m \"x $SKIP\"" "$FEATURE" DENY
+check "  control: -c <key=value> commit on main is allowed" \
+  "git -c user.name=t commit -m \"x $SKIP\"" "$MAIN" ALLOW
+check "--git-dir <feature .git> (separate argument) is denied from a main cwd" \
+  "git --git-dir $FEATURE/.git --work-tree $FEATURE commit -m \"x $SKIP\"" "$MAIN" DENY
+check "--git-dir=<feature .git> (attached form) is denied from a main cwd" \
+  "git --git-dir=$FEATURE/.git --work-tree=$FEATURE commit -m \"x $SKIP\"" "$MAIN" DENY
+check "a plain flag before -C does not hide it" \
+  "git --no-pager -C $FEATURE commit -m \"x $SKIP\"" "$MAIN" DENY
+
+echo
+echo "the branch is read from the repo the commit acts on, not the session cwd (#2)"
+check "-C <main repo> from a feature-branch cwd is allowed" \
+  "git -C $MAIN commit -m \"chore: update $SKIP\"" "$FEATURE" ALLOW
+check "quoted -C <feature repo> from a main cwd is denied" \
+  "git -C \"$FEATURE\" commit -m \"x $SKIP\"" "$MAIN" DENY
+# git applies each later -C relative to the one before it; an absolute one
+# replaces what came before.
+check "chained -C <root> -C feat resolves to the feature repo" \
+  "git -C $FIX -C feat commit -m \"x $SKIP\"" "$MAIN" DENY
+check "chained -C <root> -C mainr resolves to the main repo" \
+  "git -C $FIX -C mainr commit -m \"x $SKIP\"" "$FEATURE" ALLOW
+check "a later absolute -C replaces an earlier one" \
+  "git -C $MAIN -C $FEATURE commit -m \"x $SKIP\"" "$MAIN" DENY
+check "-C naming a directory that is not a repo fails open" \
+  "git -C $FIX/not-a-repo commit -m \"x $SKIP\"" "$FEATURE" ALLOW
+# A -C argument that only the shell can expand cannot be resolved here. The
+# hook then checks the session cwd, which is what it did before -C was read.
+check "-C with a shell variable falls back to the session cwd" \
+  "git -C \"\$REPO_DIR\" commit -m \"x $SKIP\"" "$FEATURE" DENY
+check "the opt-out still applies with -C" \
+  "HOOK_ALLOW_SKIP_CI=1 git -C $FEATURE commit -m \"x $SKIP\"" "$MAIN" ALLOW
+
+echo
+echo "quoted data is not a command; a quoted MESSAGE is still read (#2)"
+# Separators inside a quoted argument used to anchor a command, so a string that
+# merely contains a commit command (a printf argument, a JSON blob) was denied.
+check "a commit command inside a single-quoted printf argument is allowed" \
+  "printf '%s\\n' 'cd x && git commit -m \"fix $SKIP\"'" "$FEATURE" ALLOW
+check "a commit command inside a double-quoted echo argument is allowed" \
+  "echo \"next: cd x; git commit -m fix-$SKIP\"" "$FEATURE" ALLOW
+check "a commit command inside a quoted JSON string is allowed" \
+  "printf '%s' '{\"command\":\"cd x && git commit -m \\\"$SKIP\\\"\"}'" "$FEATURE" ALLOW
+check "  control: the same commit run for real after cd && is denied" \
+  "cd $FEATURE && git commit -m \"fix $SKIP\"" "$FEATURE" DENY
+check "marker inside a single-quoted -m message is denied" \
+  "git commit -m 'subject $SKIP'" "$FEATURE" DENY
+check "command substitution inside double quotes still runs, so it is denied" \
+  "echo \"\$(git commit -m 'x $SKIP')\"" "$FEATURE" DENY
+check "marker in a -F - heredoc after a quoted global is denied" \
+  "git -C \"$FEATURE\" commit -F - <<'EOF'
+subject
+
+body mentions $SKIP
+EOF" "$MAIN" DENY
+
+echo
+echo "lib/cmdparse.py helpers used by this hook"
+# Direct checks on the helpers, so a regression in one shows up by name rather
+# than only as a changed verdict above. Output goes to a file, not through a
+# pipeline: a while-loop on the right of a pipe runs in a subshell under
+# bash 3.2 and would lose the counters.
+UNIT_OUT="$FIX/cmdparse-unit.out"
+CP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)" "$PY" -X utf8 - > "$UNIT_OUT" 2>&1 <<'PY'
+import os, sys
+sys.path.insert(0, os.environ.get("CP_LIB", ""))
+from cmdparse import mask_quoted, search_cmd, git_global_args, git_invocation
+
+def check(label, ok):
+    print(("PASS " if ok else "FAIL ") + label)
+
+s = "printf '%s' 'cd x && git commit' \"a; b\""
+m = mask_quoted(s)
+check("U1 mask_quoted keeps the length", len(m) == len(s))
+check("U2 mask_quoted blanks separators inside quotes", "&&" not in m and ";" not in m)
+check("U3 mask_quoted keeps the quote characters", m.count("'") == s.count("'") and m.count('"') == s.count('"'))
+check("U4 mask_quoted leaves $( ) inside double quotes live",
+      "git" in mask_quoted('echo "$(git commit -m x)"'))
+check("U5 search_cmd ignores a verb anchored inside quotes",
+      search_cmd(r"git\s+commit\b", "printf '%s' 'cd x && git commit'") is None)
+check("U6 search_cmd finds a verb at command position",
+      search_cmd(r"git\s+commit\b", "cd x && git commit -m 'y'") is not None)
+inv = search_cmd(git_invocation("commit"), 'git -C a -c k=v -C "b c" --git-dir=d --work-tree e commit -m x')
+check("U7 git_invocation captures the globals before the subcommand", inv is not None)
+args = git_global_args(inv.group(1)) if inv else None
+check("U8 git_global_args keeps -C / --git-dir / --work-tree in order, drops -c",
+      args == ["-C", "a", "-C", "b c", "--git-dir", "d", "--work-tree", "e"])
+inv2 = search_cmd(git_invocation("commit"), 'git -C "$X" commit -m x')
+check("U9 git_global_args refuses an argument the shell would expand",
+      inv2 is not None and git_global_args(inv2.group(1)) is None)
+# An apostrophe in a heredoc body is text, not an opening quote. If it were
+# read as one, everything after it would be masked and the real commit that
+# follows would go unseen.
+hd = "x=\"$(cat <<'EOF'\nit's a note\nEOF\n)\" && git commit -m y"
+check("U10 an apostrophe in a heredoc body does not mask what follows",
+      search_cmd(r"git\s+commit\b", hd) is not None)
+PY
+UNIT_EXPECT=10
+unit_seen=0
+while IFS= read -r line; do
+  case "$line" in
+    PASS\ *) echo "  PASS  ${line#PASS }"; pass=$((pass+1)); unit_seen=$((unit_seen+1)) ;;
+    FAIL\ *) echo "  FAIL  ${line#FAIL }"; fail=$((fail+1)); unit_seen=$((unit_seen+1)) ;;
+  esac
+done < "$UNIT_OUT"
+if [ "$unit_seen" -eq "$UNIT_EXPECT" ]; then
+  echo "  PASS  U0 all $UNIT_EXPECT helper checks reported"; pass=$((pass+1))
+else
+  echo "  FAIL  U0 helper checks reported $unit_seen of $UNIT_EXPECT; output was:"; fail=$((fail+1))
+  sed 's/^/        /' "$UNIT_OUT"
+fi
 
 echo
 echo "degenerate input must never crash or block"

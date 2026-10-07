@@ -105,22 +105,27 @@ if not cmd:
     sys.exit(0)
 
 # --- shared command/path parsing ---------------------------------------------
-# CMD_START and to_native_path come from lib/cmdparse.py rather than being copied
-# in here. That module exists precisely because two sibling guards once carried
-# hand-copies of this logic, one got hardened and the other did not, and the
-# drifted one then fired on prose. Re-inlining it here to make this file
+# The command and path parsing comes from lib/cmdparse.py rather than being
+# copied in here. That module exists precisely because two sibling guards once
+# carried hand-copies of this logic, one got hardened and the other did not, and
+# the drifted one then fired on prose. Re-inlining it here to make this file
 # self-contained would rebuild the same trap.
 #
-# CMD_START anchors a verb to a position where a command can actually start.
-# Backtick is deliberately excluded: a verb after a backtick is overwhelmingly a
-# markdown code span, and matching it turns "writing about a command" into
-# "running one" — a guard whose false positives scale with how often you document
-# the thing it guards.
+# search_cmd anchors a verb to a position where a command can actually start
+# (CMD_START), looking for that position outside quoted strings. Backtick is
+# deliberately excluded as an anchor: a verb after a backtick is overwhelmingly
+# a markdown code span, and matching it turns "writing about a command" into
+# "running one" — a guard whose false positives scale with how often you
+# document the thing it guards.
+#
+# git_invocation and git_global_args handle git's own options that come before
+# the subcommand, and which of them select a different repository.
 #
 # to_native_path handles the MSYS boundary. A path passed as a STANDALONE env var
 # is auto-converted by MSYS on the way to a native binary; a path EMBEDDED IN A
 # STRING is not, and the hook payload is JSON. Hence SCG_LIB below arrives native
-# while the payload's own cwd does not.
+# while the payload's own cwd does not. git_global_args applies it to paths it
+# reads from the command for the same reason.
 #
 # The import failure is LOUD, not silent. Degrading to a no-op would leave the
 # guard running, returning verdicts, and quietly blind to a whole class of
@@ -129,7 +134,7 @@ if not cmd:
 # conceal that there wasn't one.
 sys.path.insert(0, os.environ.get("SCG_LIB", ""))
 try:
-    from cmdparse import CMD_START, to_native_path
+    from cmdparse import git_global_args, git_invocation, search_cmd, to_native_path
 except Exception as e:
     sys.stderr.write(
         "skip-ci-guard: cannot import cmdparse (%s) — CI-marker checking is NOT "
@@ -145,7 +150,20 @@ if re.search(r"\bHOOK_ALLOW_SKIP_CI=1\b", cmd):
 # `git commit` in COMMAND position — not `echo "git commit …"`, not a --message
 # that happens to quote one. Heredocs are deliberately left intact: for
 # `git commit -F -` the heredoc body IS the message being checked.
-if not re.search(CMD_START + r"git\b(?:\s+-[^\s]+|\s+--\S+)*\s+commit\b", cmd):
+#
+# Two things the anchor has to get right:
+#   * Global options before the subcommand. Some take a separate argument
+#     (`git -C <dir> commit`, `git -c <k=v> commit`, `git --git-dir <dir>
+#     commit`). Skipping only tokens that start with `-` stopped at that
+#     argument, and such a commit was never checked. git_invocation knows which
+#     options take one.
+#   * Quoted data. search_cmd looks for the command-position anchor with quoted
+#     contents masked, so `printf '%s' 'cd x && git commit …'` is not read as a
+#     commit. The masking applies only to finding the anchor: the skip-token
+#     search below still reads the whole command, because a quoted -m argument
+#     or a heredoc body is exactly where the message lives.
+inv = search_cmd(git_invocation("commit"), cmd)
+if not inv:
     sys.exit(0)
 
 # GitHub's documented skip tokens, matched anywhere in the message exactly as
@@ -158,9 +176,25 @@ token = m.group(0)
 
 cwd = to_native_path(payload.get("cwd") or "") or None
 
+# Read the branch of the repository the commit acts on. That is the payload cwd
+# adjusted by any -C, --git-dir and --work-tree given to this git invocation.
+# Those options are handed back to git in their original order, so git applies
+# its own rules: each -C relative to the one before, an absolute -C replacing
+# what came before, --git-dir and --work-tree relative to the result.
+#
+# If one of them depends on shell expansion (`-C "$DIR"`), the target cannot be
+# known from the text. The session cwd is checked instead, which is what this
+# hook did before it read -C at all; it says so on stderr.
+target = git_global_args(inv.group(1))
+if target is None:
+    sys.stderr.write(
+        "skip-ci-guard: the commit's target repository depends on shell expansion — "
+        "checking the session directory's branch instead.\n")
+    target = []
+
 def git(*args):
     try:
-        r = subprocess.run(["git"] + (["-C", cwd] if cwd else []) + list(args),
+        r = subprocess.run(["git"] + (["-C", cwd] if cwd else []) + target + list(args),
                            capture_output=True, text=True, timeout=5)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:

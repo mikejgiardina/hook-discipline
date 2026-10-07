@@ -38,7 +38,7 @@ test-payload-contract.sh	18
 test-resolve-python.sh	17
 test-secrets-scan.sh	22
 test-session-registry.sh	41
-test-skip-ci-guard.sh	26
+test-skip-ci-guard.sh	58
 test-term-scan.sh	22
 test-worktree-guard.sh	34
 test-timeout-fallback.sh	6
