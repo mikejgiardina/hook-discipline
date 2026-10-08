@@ -51,6 +51,13 @@ mkdir -p "$FIXDIR/winstub" "$FIXDIR/macos" "$FIXDIR/nothing"
 # two cases that legitimately set the pin do so per-invocation, further down.
 unset HOOK_PYTHON
 
+# The resolver caches a clean discovery in a file. Every case here points that
+# cache at a file inside the fixture: left at its default, the cases would share
+# the caller's real cache, and an entry written there by an earlier hook could
+# answer for a stub this suite interposes. The TTL is pinned to its default.
+export RESOLVE_PYTHON_CACHE="$FIXDIR/rp.cache"
+unset RESOLVE_PYTHON_CACHE_TTL
+
 pass=0; fail=0; skip=0
 ok()   { echo "  PASS  $1"; pass=$((pass+1)); }
 no()   { echo "  FAIL  $1"; fail=$((fail+1)); }
@@ -118,6 +125,10 @@ else
   no "HOOK_PYTHON is set ([$HOOK_PYTHON]) — the pin outranks PATH, so every
         interposition case below is measuring the pin, not its stub"
 fi
+case "${RESOLVE_PYTHON_CACHE:-}" in
+  "$FIXDIR"/*) ok "the probe cache under test lives inside the fixture" ;;
+  *)           no "RESOLVE_PYTHON_CACHE is [${RESOLVE_PYTHON_CACHE:-}], not a fixture path" ;;
+esac
 echo
 
 # --- 1. POSITIVE CONTROL: the old pattern must pick the dead stub ------------
@@ -301,6 +312,167 @@ if [ -z "$MISSING_MIRROR" ]; then
 else
   no "mirror the hook but not resolve-python.sh (their assertions will go vacuous):$MISSING_MIRROR"
 fi
+
+echo
+echo "probe cache"
+
+# --- 10. a clean discovery is cached; anything that could change it re-probes --
+# A hook is a fresh process, so the cache is a file, and each call below runs in
+# its own bash exactly as two hook invocations would. The counting stub logs
+# every `--version` it answers, so "was it probed?" is measured, not inferred.
+#
+# Each miss case sits next to a control showing the same setup HITS when nothing
+# changed. Without that, a cache that never hits passes every miss case.
+mkdir -p "$FIXDIR/count" "$FIXDIR/shadow" "$FIXDIR/pin"
+cat > "$FIXDIR/count/python3" <<'CNT'
+#!/bin/sh
+echo x >> "$PROBE_LOG"
+echo "Python 3.13.14"
+CNT
+cp "$FIXDIR/nothing/python" "$FIXDIR/count/python"   # shadow any real bare python
+cp "$FIXDIR/count/python3" "$FIXDIR/pin/python3"
+chmod +x "$FIXDIR/count/python3" "$FIXDIR/count/python" "$FIXDIR/pin/python3"
+export PROBE_LOG="$FIXDIR/probes.log"
+C="$FIXDIR/cache10"
+
+probes() { if [ -f "$PROBE_LOG" ]; then grep -c x "$PROBE_LOG"; else echo 0; fi; }
+rp() { # $1=cache path
+  PATH="$FIXDIR/count:$PATH" RESOLVE_PYTHON_CACHE="$1" bash -c ". '$HELPER'; resolve_python" 2>/dev/null
+}
+# GNU touch takes -d @epoch; BSD touch (macOS) does not, but BSD date -r does.
+set_mtime() { # $1=epoch $2=file
+  touch -d "@$1" "$2" 2>/dev/null || touch -t "$(date -r "$1" +%Y%m%d%H%M.%S)" "$2"
+}
+# Interpreters older than any cache file this section writes, so only the case
+# that means to can make one look upgraded.
+set_mtime $(( $(date +%s) - 60 )) "$FIXDIR/count/python3"
+set_mtime $(( $(date +%s) - 60 )) "$FIXDIR/pin/python3"
+
+: > "$PROBE_LOG"; rm -f "$C"
+G1="$(rp "$C")"; G2="$(rp "$C")"
+case "$G1" in
+  */count/python3) ok "cache: the first call discovers the counting stub" ;;
+  *)               no "cache: first call wanted */count/python3, got [$G1]" ;;
+esac
+is "cache: the second call returns the same interpreter" "$G1" "$G2"
+is "cache: two calls probe once" "1" "$(probes)"
+
+# An upgrade, reinstall or re-pointed alias leaves a newer file behind.
+: > "$PROBE_LOG"
+set_mtime $(( $(date +%s) + 120 )) "$FIXDIR/count/python3"
+if [ "$FIXDIR/count/python3" -nt "$C" ]; then
+  rp "$C" >/dev/null
+  is "cache: an interpreter newer than the cache re-probes" "1" "$(probes)"
+else
+  no "cache: could not future-date the stub, so the newer-interpreter case did not run"
+fi
+# Back into the past. Left future-dated, the stub would make EVERY later lookup a
+# miss, and each miss case below would pass without the cache ever able to hit.
+set_mtime $(( $(date +%s) - 60 )) "$FIXDIR/count/python3"
+
+: > "$PROBE_LOG"
+rp "$C" >/dev/null
+is "cache: control — an unchanged PATH is a hit" "0" "$(probes)"
+G3="$(PATH="$FIXDIR/macos:$FIXDIR/count:$PATH" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" 2>/dev/null)"
+case "$G3" in
+  */macos/python3) ok "cache: a PATH change is a miss (new answer)" ;;
+  *)               no "cache: a PATH change returned [$G3], wanted */macos/python3" ;;
+esac
+
+# A new interpreter SHADOWING the cached one under the identical PATH string. The
+# key has to carry what each name resolves to, not PATH alone; the control first
+# shows this exact PATH hitting, so a PATH-only key cannot pass by missing.
+SHP="$FIXDIR/shadow:$FIXDIR/count:$PATH"
+rm -f "$C"; : > "$PROBE_LOG"
+PATH="$SHP" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" >/dev/null 2>&1
+PATH="$SHP" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" >/dev/null 2>&1
+is "cache: control — the shadow PATH hits before anything is added to it" "1" "$(probes)"
+cp "$FIXDIR/winstub/python3" "$FIXDIR/shadow/python3"; chmod +x "$FIXDIR/shadow/python3"
+G5="$(PATH="$SHP" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" 2>/dev/null)"
+rm -f "$FIXDIR/shadow/python3"
+case "$G5" in
+  */count/python3) no "cache: returned the cached interpreter past a new shadowing python3" ;;
+  *)               ok "cache: a new interpreter shadowing the cached one on the same PATH is a miss" ;;
+esac
+
+# A deleted interpreter. A pin keeps the key identical after the deletion, so the
+# executable check is the only thing standing between the caller and a dead path.
+rpin() {
+  PATH="$FIXDIR/count:$PATH" HOOK_PYTHON="$FIXDIR/pin/python3" RESOLVE_PYTHON_CACHE="$C" \
+    bash -c ". '$HELPER'; resolve_python" 2>/dev/null
+}
+rm -f "$C"; : > "$PROBE_LOG"
+rpin >/dev/null; P2="$(rpin)"
+is "cache: control — a working pin is cached (second call is a hit)" "1:$FIXDIR/pin/python3" "$(probes):$P2"
+mv "$FIXDIR/pin/python3" "$FIXDIR/pin/python3.gone"
+OUT="$(rpin)"
+mv "$FIXDIR/pin/python3.gone" "$FIXDIR/pin/python3"
+case "$OUT" in
+  */pin/python3)   no "cache: returned a deleted interpreter [$OUT]" ;;
+  */count/python3) ok "cache: a deleted interpreter is never returned (rediscovers)" ;;
+  *)               no "cache: deleted pin gave [$OUT], wanted rediscovery of */count/python3" ;;
+esac
+
+printf 'garbage\n\n' > "$C"; : > "$PROBE_LOG"
+G4="$(rp "$C")"
+case "$(probes):$G4" in
+  1:*/count/python3) ok "cache: a corrupt cache file is ignored (re-probes, right answer)" ;;
+  *)                 no "cache: corrupt file gave [$G4] after $(probes) probe(s)" ;;
+esac
+
+: > "$PROBE_LOG"
+rp "" >/dev/null; rp "" >/dev/null
+is "cache: RESOLVE_PYTHON_CACHE='' disables it (probes every call)" "2" "$(probes)"
+
+# Only clean discoveries are stored. Were the fallback after a dead pin cached,
+# the second call would hit and the operator would hear about the pin once.
+rm -f "$C"
+E1="$(PATH="$FIXDIR/macos:$PATH" HOOK_PYTHON="$FIXDIR/winstub/python3" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" 2>&1 >/dev/null)"
+E2="$(PATH="$FIXDIR/macos:$PATH" HOOK_PYTHON="$FIXDIR/winstub/python3" RESOLVE_PYTHON_CACHE="$C" bash -c ". '$HELPER'; resolve_python" 2>&1 >/dev/null)"
+case "$E1" in *"did not answer"*) w1=yes ;; *) w1=no ;; esac
+case "$E2" in *"did not answer"*) w2=yes ;; *) w2=no ;; esac
+is "cache: a dead pin is never cached (warns on every call)" "yes:yes" "$w1:$w2"
+
+# The TTL bounds how long an interpreter that broke without any file changing can
+# still be returned. Line 3 of the cache is the entry's epoch.
+rm -f "$C"; : > "$PROBE_LOG"
+rp "$C" >/dev/null
+if [ -f "$C" ]; then
+  l1=""; l2=""
+  { IFS= read -r l1; IFS= read -r l2; } < "$C"
+  printf '%s\n%s\n%s\n' "$l1" "$l2" 1000 > "$C"
+  rp "$C" >/dev/null
+  is "cache: an expired entry re-probes" "2" "$(probes)"
+else
+  no "cache: nothing was stored, so the expired-entry case did not run"
+fi
+
+rm -f "$C"; : > "$PROBE_LOG"
+RESOLVE_PYTHON_CACHE_TTL=abc rp "$C" >/dev/null; RESOLVE_PYTHON_CACHE_TTL=abc rp "$C" >/dev/null
+is "cache: a non-numeric TTL falls back to the default (second call hits)" "1" "$(probes)"
+rm -f "$C"; : > "$PROBE_LOG"
+RESOLVE_PYTHON_CACHE_TTL=0 rp "$C" >/dev/null; RESOLVE_PYTHON_CACHE_TTL=0 rp "$C" >/dev/null
+is "cache: a zero TTL never hits" "2" "$(probes)"
+
+# A directory at the cache path: never write into or beside it, still answer.
+mkdir -p "$FIXDIR/cdir"
+G6="$(rp "$FIXDIR/cdir")"
+LEFT="$(ls -A "$FIXDIR/cdir")$(ls "$FIXDIR" | grep '^cdir\..*\.tmp$' || true)"
+case "$G6:$LEFT" in
+  */count/python3:) ok "cache: a directory at the cache path is left alone" ;;
+  *)                no "cache: directory cache path gave [$G6], left behind [$LEFT]" ;;
+esac
+
+# Miss and hit both under a strict caller, with a corrupt file to start from.
+printf 'garbage\n' > "$C"
+if PATH="$FIXDIR/count:$PATH" RESOLVE_PYTHON_CACHE="$C" bash -c "set -euo pipefail; . '$HELPER'
+     resolve_python >/dev/null; resolve_python >/dev/null
+     a=\"\$(resolve_python)\"; [ -n \"\$a\" ]" 2>/dev/null; then
+  ok "cache: miss and hit are safe under set -euo pipefail"
+else
+  no "cache: a set -euo pipefail caller died on the miss or hit path"
+fi
+unset PROBE_LOG
 
 echo
 echo "----------------------------------------"
