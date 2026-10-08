@@ -427,7 +427,7 @@ kind.
 ```
 lib/resolve-python.sh      interpreter resolution that probes before accepting
 lib/payload.sh             stdin payload reader; the || true that keeps hooks alive
-lib/cmdparse.py            heredoc stripping, command-position anchoring, MSYS paths
+lib/cmdparse.py            heredoc stripping, quote-aware command anchoring, git globals, MSYS paths
 
 hooks/secrets-scan.sh      fail-closed: blocks commits staging credentials
 hooks/skip-ci-guard.sh     fail-open-but-loud: keeps CI-skip markers off feature branches
@@ -449,7 +449,7 @@ examples/terms.example.json  schema for term-scan, with fictional entries
 
 GitHub's issue linker silently drops several forms that look correct to a human:
 
-- `Closes #310, #305` closes only **#310**. The keyword must be repeated.
+- `Closes #120, #121` closes only **#120**. The keyword must be repeated.
 - Closing keywords in a pull request **title** do nothing. The linker reads the
   description and commit messages.
 - `Closes shorthand#123`, where `shorthand` is a project's own prose convention

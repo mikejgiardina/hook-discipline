@@ -4,13 +4,13 @@ r"""closing-refs.py -- extract issue-closing directives from a PR body / commit 
 === Why this exists ===
 A pull request merged cleanly and its description read:
 
-    Closes core#538. Closes core#522. Closes core#541.
+    Closes core#401. Closes core#402. Closes core#403.
 
 All three issues stayed OPEN. The control is a pull request in the same repo an
-hour earlier: it wrote `Closes #539. Closes #537.` and both closed on merge.
+hour earlier: it wrote `Closes #404. Closes #405.` and both closed on merge.
 
 GitHub resolves `#N` in the current repo and `owner/repo#N` cross-repo. A bare
-`core#538` is neither -- it is a project's own prose shorthand for disambiguating
+`core#401` is neither -- it is a project's own prose shorthand for disambiguating
 which of several repos an issue belongs to. It reads perfectly to a human and is
 invisible to GitHub's linker. Where such a convention is *recommended* practice,
 the natural way to write a PR body is the broken way.
@@ -93,11 +93,11 @@ An auto-close carries the triggering `commit_id`; a hand-close carries
 `commit_id: NONE`. That is the discriminator, and it is what a sweep should use
 rather than trusting the issue's closed state.
 
-  * LIST CONTINUATION. `Closes #310, #305.` GitHub's docs require the keyword
-    before EACH issue ("Closes #10, closes #123"), so the trailing `, #305` is
+  * LIST CONTINUATION. `Closes #120, #121.` GitHub's docs require the keyword
+    before EACH issue ("Closes #10, closes #123"), so the trailing `, #121` is
     not a directive. Both issues came back `commit_id: NONE` -- hand-closed,
     minutes apart, by a person.
-  * TITLE-ONLY. A PR TITLE carrying `closes #175, #191` with no closing line in
+  * TITLE-ONLY. A PR TITLE carrying `closes #130, #131` with no closing line in
     the description. GitHub's linker reads the description and the commit
     messages, not the title. Both issues again `commit_id: NONE`, closed by hand
     at the same second.
