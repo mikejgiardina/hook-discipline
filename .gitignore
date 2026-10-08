@@ -3,6 +3,10 @@
 # it would mean shipping one machine's transient state to every other one.
 .session-registry.json
 .session-registry.json.tmp.*
+# The lockfile that serialises registry writers, and any damaged registry moved
+# aside for inspection instead of being overwritten.
+.session-registry.json.lock
+.session-registry.json.corrupt.*
 
 # Your real term registry. hooks/term-scan.sh reads HOOK_TERM_REGISTRY; keep the
 # file itself outside this repo. A list of terms you do not want published is

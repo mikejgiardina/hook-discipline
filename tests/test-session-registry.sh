@@ -75,6 +75,10 @@ cp "$REAL_HOOK" "$FIX/hooks/session-registry.sh"
 # advisory hooks is a SILENT exit 0. Every assertion then passes-by-not-running,
 # which is the exact shape this suite exists to rule out.
 cp "$LIB_DIR/resolve-python.sh" "$FIX/lib/"
+# The hook imports lib/jsonstate.py for its lock and its load/save. Without the
+# copy it announces the missing module and writes nothing, so every registration
+# case below would fail for a reason unrelated to its subject.
+cp "$LIB_DIR/jsonstate.py" "$FIX/lib/"
 HOOK="$FIX/hooks/session-registry.sh"
 # REG is derived as "<dir of the script>/.session-registry.json", so mirroring
 # the hook is what redirects the registry. Getting this wrong would have the
@@ -360,10 +364,9 @@ check "F3 unparseable payload -> quiet" QUIET "$(verdict "$(run register '{not j
 printf '%s' '{not json' | env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID bash "$HOOK" register >/dev/null 2>&1
 check "F4 ...and exits 0" 0 $?
 
-# F5: a corrupt registry on disk. This file is written by concurrent sessions
-# with last-writer-wins semantics, so a truncated read is a real possibility —
-# and it must not take down every future session start. Recovering by treating it
-# as empty is the documented posture; assert it rather than assume it.
+# F5: a corrupt registry on disk must not take down every future session start.
+# The hook moves it aside and starts fresh (block K pins the move-aside half);
+# this case pins the recovery half, and predates the move-aside.
 printf 'garbage not json' > "$REG"
 run register "$(payload sessA)" >/dev/null
 check "F5 corrupt registry recovers rather than wedging" YES "$(registered sessA)"
@@ -377,11 +380,80 @@ shards="$(find "$FIX" -name '.session-registry.json.tmp.*' 2>/dev/null | wc -l |
 check "F6 no temp shard is left behind (atomic write)" 0 "$shards"
 
 echo
+echo "K. concurrent writers and a damaged registry"
+# Two defects, both silent (#4). Writers did load -> modify -> replace with no
+# lock, so overlapping writers lost each other's entries. And a registry that
+# could not be parsed was read as {}, so the next save wrote back only the
+# current session and every peer disappeared, with nothing said.
+quarantined() { find "$FIX/hooks" -name '.session-registry.json.corrupt.*' 2>/dev/null; }
+
+# K1-K4: the damaged file is moved aside byte-for-byte, and the hook says so.
+rm -f "$REG" "$REG".corrupt.*
+printf 'garbage {"peerQ": not json' > "$REG"
+cp "$REG" "$FIX/expected-corrupt"
+err="$(run_err heartbeat "$(payload sessA)")"
+q="$(quarantined)"
+check "K1 a corrupt registry is moved aside (exactly one .corrupt.* file)" 1 \
+  "$(printf '%s' "$q" | grep -c .)"
+if [ -n "$q" ] && cmp -s "$FIX/expected-corrupt" "$q"; then
+  echo "  PASS  K2 ...byte-for-byte, so the evidence survives"; pass=$((pass+1))
+else
+  echo "  FAIL  K2 quarantined file missing or altered ([${q:-none}])"; fail=$((fail+1))
+fi
+check "K3 ...and the hook says so on stderr" YES \
+  "$(printf '%s' "$err" | grep -q 'moved it aside' && echo YES || echo NO)"
+check "K4 ...and the fresh registry holds self" YES "$(registered sessA)"
+
+# K5/K6: SessionStart stdout is the channel that reaches the session, so
+# register repeats the notice there. Heartbeat runs every turn and stays quiet
+# on stdout (K6 is the control: the notice is mode-gated, not unconditional).
+rm -f "$REG" "$REG".corrupt.*
+printf 'garbage' > "$REG"
+out="$(run register "$(payload sessA)")"
+check "K5 register reports the move-aside on stdout" YES \
+  "$(printf '%s' "$out" | grep -q 'moved it aside' && echo YES || echo NO)"
+rm -f "$REG" "$REG".corrupt.*
+printf 'garbage' > "$REG"
+out="$(run heartbeat "$(payload sessA)")"
+check "K6 heartbeat keeps stdout clean (control for K5)" "" "$out"
+rm -f "$REG" "$REG".corrupt.*
+
+# K7-K10: a live holder. A fresh lockfile means another writer is inside its
+# section, so this write must wait, give up and leave both files alone. The
+# hook waits its full lock timeout here (a few seconds), by design.
+rm -f "$REG" "$REG.lock"
+seed_peer peerL 60
+printf '4242 1700000000\n' > "$REG.lock"
+err="$(run_err heartbeat "$(payload sessLocked)")"
+check "K7 a held lock means the write is skipped" NO "$(registered sessLocked)"
+check "K8 ...the peer already there is untouched" YES "$(registered peerL)"
+check "K9 ...the holder's lockfile is left in place" '4242 1700000000' "$(cat "$REG.lock" 2>/dev/null)"
+check "K10 ...and the skip is announced on stderr" YES \
+  "$(printf '%s' "$err" | grep -q 'lock is busy' && echo YES || echo NO)"
+rm -f "$REG.lock"
+run heartbeat "$(payload sessLocked)" >/dev/null
+check "K11 the same write lands once the lock is free (control for K7)" YES "$(registered sessLocked)"
+
+# K12/K13: overlapping writers. Six heartbeats started together must all land.
+rm -f "$REG" "$REG.lock"
+for n in 1 2 3 4 5 6; do
+  run heartbeat "$(payload "conc$n")" >/dev/null &
+done
+wait
+check "K12 6 concurrent heartbeats register all 6" 6 "$(count_entries)"
+check "K13 no lockfile is left behind" NO "$([ -e "$REG.lock" ] && echo YES || echo NO)"
+
+echo
 echo "H. mirror integrity"
 if cmp -s "$REAL_HOOK" "$HOOK"; then
   echo "  PASS  H1 mirrored hook is byte-identical to the shipped hook"; pass=$((pass+1))
 else
   echo "  FAIL  H1 mirrored hook has drifted from hooks/session-registry.sh"; fail=$((fail+1))
+fi
+if cmp -s "$LIB_DIR/jsonstate.py" "$FIX/lib/jsonstate.py"; then
+  echo "  PASS  H1b mirrored lib/jsonstate.py is byte-identical to the shipped one"; pass=$((pass+1))
+else
+  echo "  FAIL  H1b mirrored lib/jsonstate.py has drifted from lib/jsonstate.py"; fail=$((fail+1))
 fi
 # H2: the fixture registry must be the ONLY one this suite touched. If REG
 # resolution ever moves, these cases would silently mutate the live registry
