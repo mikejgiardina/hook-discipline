@@ -293,6 +293,145 @@ else
   echo "  SKIP  JSON well-formedness (no python)"; skip=$((skip+1))
 fi
 
+# --- 18. files staged by the SAME command (#3) ------------------------------
+# The hook runs BEFORE the command does. In `git add X && git commit`, the add
+# has not touched the index yet when the hook looks, so a check of the current
+# index alone never sees X. The hook must judge what the commit would include:
+# the existing index plus whatever earlier `git add`s in the same command stage.
+SC="$FIX/samecall"; mk_repo "$SC"; mkdir -p "$SC/sub"
+echo "SECRET=1" > "$SC/.env.local"
+
+out="$(run_hook "$FIX" "$(payload "cd $SC && git add .env.local && git commit -m x" "$FIX")")"
+check "18a same-call add+commit of untracked .env.local (cd form) -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "git -C $SC add .env.local && git -C $SC commit -m x" "$FIX")")"
+check "18b same-call add+commit of untracked .env.local (-C form) -> deny" DENY "$(verdict "$out")"
+
+# The hook may simulate the add, but it must never perform it.
+staged="$(git -C "$SC" diff --cached --name-only 2>/dev/null)"
+check "18c the real index is untouched after evaluating a same-call add" "" "$staged"
+
+# Relative add paths resolve against the directory the command runs in, which
+# here is a subdirectory, not the repository root.
+out="$(run_hook "$FIX" "$(payload "cd $SC/sub && git add ../.env.local && git commit -m x" "$FIX")")"
+check "18d same-call add from a subdirectory with a relative path -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "cd $SC && git add -A && git commit -m x" "$FIX")")"
+check "18e same-call git add -A sweeping in .env.local -> deny" DENY "$(verdict "$out")"
+
+# Control: the same staging command WITHOUT a commit. Staging is not the hazard;
+# the next commit is, and it will be scanned when it happens.
+out="$(run_hook "$FIX" "$(payload "cd $SC && git add .env.local && echo will commit later" "$FIX")")"
+check "18f non-commit command staging .env.local -> allow (control)" ALLOW "$(verdict "$out")"
+
+# Control: an add into a DIFFERENT repository does not reach this commit.
+out="$(run_hook "$FIX" "$(payload "git -C $SC add .env.local && git -C $CLEAN commit -m x" "$FIX")")"
+check "18g same-call add into another repo, commit in a clean one -> allow (control)" ALLOW "$(verdict "$out")"
+rm -f "$SC/.env.local"
+
+for name in id_ed25519 CERT.PEM; do
+  echo x > "$SC/$name"
+  out="$(run_hook "$FIX" "$(payload "cd $SC && git add $name && git commit -m x" "$FIX")")"
+  check "18h same-call add+commit of untracked $name -> deny" DENY "$(verdict "$out")"
+  rm -f "$SC/$name"
+done
+
+# Controls: same-call staging of files that are not secrets must stay allowed.
+echo more >> "$SC/README.md"
+out="$(run_hook "$FIX" "$(payload "cd $SC && git add README.md && git commit -m x" "$FIX")")"
+check "18i same-call add+commit of README.md -> allow (control)" ALLOW "$(verdict "$out")"
+git -C "$SC" checkout -q -- README.md 2>/dev/null
+
+for name in id_ed25519.pub .env.example; do
+  echo x > "$SC/$name"
+  out="$(run_hook "$FIX" "$(payload "cd $SC && git add $name && git commit -m x" "$FIX")")"
+  check "18j same-call add+commit of $name -> allow (control)" ALLOW "$(verdict "$out")"
+  rm -f "$SC/$name"
+done
+
+# The scratch index must START from the real one: a secret that was already
+# staged still blocks when the same command also stages something harmless.
+out="$(run_hook "$FIX" "$(payload "cd $DIRTY && git add README.md && git commit -m x" "$FIX")")"
+check "18k already-staged secret plus a same-call harmless add -> deny" DENY "$(verdict "$out")"
+
+# --- 19. the commit itself can stage: -a and pathspecs (#3) -----------------
+# `deploy.key` matches the original pattern set, so these cases vary only the
+# staging mechanism and not the pattern.
+CA="$FIX/commit_a"; mk_repo "$CA"
+echo k1 > "$CA/deploy.key"
+git -C "$CA" add -f deploy.key >/dev/null 2>&1
+git -C "$CA" commit -qm "track key" >/dev/null 2>&1
+echo k2 > "$CA/deploy.key"          # tracked, modified, NOT staged
+echo more >> "$CA/README.md"        # tracked, modified, NOT staged
+
+out="$(run_hook "$FIX" "$(payload "git -C $CA commit -a -m x" "$FIX")")"
+check "19a commit -a with a modified tracked secret-named file -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "git -C $CA commit -am x" "$FIX")")"
+check "19b commit -am (clustered flags) -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "git -C $CA commit -m x deploy.key" "$FIX")")"
+check "19c commit <pathspec> naming the secret-named file -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "git -C $CA commit -m x -- README.md" "$FIX")")"
+check "19d commit -- README.md leaves the modified key out -> allow (control)" ALLOW "$(verdict "$out")"
+
+out="$(run_hook "$FIX" "$(payload "git -C $CA commit -m x" "$FIX")")"
+check "19e plain commit, modification not staged -> allow (control)" ALLOW "$(verdict "$out")"
+
+# --- 20. filename patterns, case-insensitive (#3) ---------------------------
+# Each name is staged on its own, so this axis is the pattern alone.
+PAT="$FIX/patterns"; mk_repo "$PAT"
+pattern_case() { # <expected> <relative path>
+  local exp="$1" rel="$2"
+  mkdir -p "$PAT/$(dirname "$rel")"
+  echo x > "$PAT/$rel"
+  git -C "$PAT" add -f -- "$rel" >/dev/null 2>&1
+  out="$(run_hook "$FIX" "$(payload "git -C $PAT commit -m x" "$FIX")")"
+  check "20 staged $rel -> $(printf '%s' "$exp" | tr 'A-Z' 'a-z')" "$exp" "$(verdict "$out")"
+  git -C "$PAT" rm -q --cached -- "$rel" >/dev/null 2>&1
+  rm -f "$PAT/$rel"
+}
+for rel in .env .env.production.local config/.ENV.LOCAL server.pem CERT.PEM \
+           store.p12 store.pfx store.jks id_rsa id_ecdsa id_ed25519 \
+           home/.ssh/ID_RSA credentials.json SECRETS.JSON; do
+  pattern_case DENY "$rel"
+done
+for rel in id_ed25519.pub .env.example .env.sample .env.template notes.md; do
+  pattern_case ALLOW "$rel"
+done
+
+# --- 21. a payload that cannot be read must not be waved through (#3) -------
+# It contains "commit", so it may be a commit; it cannot be parsed, so nothing
+# can show it is not. A fail-closed gate blocks.
+out="$(run_hook "$FIX" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"')"
+check "21a truncated JSON containing commit -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" 'git commit -m x')"
+check "21b non-JSON payload containing commit -> deny" DENY "$(verdict "$out")"
+
+out="$(run_hook "$FIX" '{"tool_name":"Bash","tool_input":{"cmd":"git commit -m x"}}')"
+check "21c JSON without tool_input.command, containing commit -> deny" DENY "$(verdict "$out")"
+
+if [ -n "$PY" ]; then
+  out="$(run_hook "$FIX" 'git commit -m x')"
+  if printf '%s' "$out" | "$PY" -X utf8 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d['hookSpecificOutput']['permissionDecision']=='deny' else 1)" 2>/dev/null; then
+    echo "  PASS  21d unreadable-payload deny is well-formed JSON"; pass=$((pass+1))
+  else
+    echo "  FAIL  21d unreadable-payload deny is not parseable JSON:"; echo "$out" | sed 's/^/        /'; fail=$((fail+1))
+  fi
+else
+  echo "  SKIP  21d unreadable-payload JSON well-formedness (no python)"; skip=$((skip+1))
+fi
+
+# The empty payload stays allowed (case 3), but silently allowing it would look
+# identical to having checked and found nothing. It has to say so.
+err="$(printf '' | bash "$HOOK" 2>&1 >/dev/null)"
+case "$err" in
+  *"nothing was checked"*) echo "  PASS  21e empty payload reports on stderr that nothing was checked"; pass=$((pass+1)) ;;
+  *) echo "  FAIL  21e empty payload is silent on stderr (got: [$err])"; fail=$((fail+1)) ;;
+esac
+
 echo "----------------------------------------"
 echo "passed: $pass   failed: $fail   skipped: $skip"
 [ "$fail" -eq 0 ] || exit 1
