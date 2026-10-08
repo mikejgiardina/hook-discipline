@@ -14,7 +14,23 @@
 # Shares one registry with worktree-guard.sh:  hooks/.session-registry.json
 # (override with HOOK_SESSION_REGISTRY). It is machine-local runtime state, not
 # source — GITIGNORE IT, along with the `.session-registry.json.tmp.*` files the
-# atomic write leaves behind if a write is interrupted.
+# atomic write leaves behind if a write is interrupted, the
+# `.session-registry.json.lock` file that serialises writers, and any
+# `.session-registry.json.corrupt.<epoch>` file a damaged registry is moved to.
+#
+# === Concurrency (lib/jsonstate.py) ===
+# Every session runs this hook on every turn, and worktree-guard.sh writes the
+# same file on every git command, so writers overlap routinely. Each
+# read-modify-write runs under one O_EXCL lockfile. Without it, two writers that
+# loaded the same version each wrote back only their own change, and the second
+# erased the first.
+#
+# A registry that exists but cannot be parsed is NOT read as empty. Reading it as
+# empty is how the next save used to erase every peer without a word. It is moved
+# aside to `<registry>.corrupt.<epoch>`, kept as evidence, and the registry starts
+# fresh, with a notice; peers reappear at their next heartbeat. Starting fresh
+# rather than refusing to write keeps one damaged file from disabling the
+# registry for every later session.
 #
 # === Modes (argv[1]) ===
 #   register    SessionStart  — prune stale entries, upsert self, and if ANOTHER
@@ -33,11 +49,13 @@
 # of secrets-scan.sh). If python is missing, the payload is unparseable, or cwd is
 # outside any git repo, it no-ops silently — it must never block a session start.
 # jq-free (python for JSON) so the same file works on a Windows box with only
-# Git-Bash. Writes are atomic (temp + os.replace), advisory last-writer-wins.
+# Git-Bash. Writes are atomic (temp + os.replace) and serialised by a lockfile;
+# a write that cannot get the lock within a few seconds is skipped, not forced.
 set -uo pipefail
 
 MODE="${1:-register}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 REG="${HOOK_SESSION_REGISTRY:-$SCRIPT_DIR/.session-registry.json}"
 STALE="${HOOK_SESSION_STALE_SECS:-1800}"
 
@@ -54,10 +72,12 @@ fi
 # Advisory guard: no python -> no-op (never block a session on a degraded toolchain).
 # Interpreter via lib/resolve-python.sh: `command -v` proves a name resolves, not
 # that it RUNS (Windows ships a dead python3 alias stub).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/resolve-python.sh"
+. "$LIB_DIR/resolve-python.sh"
 PY="$(resolve_python || true)"; [ -n "$PY" ] || exit 0
 
-MODE="$MODE" REG="$REG" STALE="$STALE" REG_RAW="$RAW" "$PY" -X utf8 - <<'PY'
+# REG_LIB travels as a standalone env var so Git Bash hands a Windows python the
+# native form of the path (see the same note in worktree-guard.sh).
+MODE="$MODE" REG="$REG" STALE="$STALE" REG_RAW="$RAW" REG_LIB="$LIB_DIR" "$PY" -X utf8 - <<'PY'
 import os, sys, json, time
 
 mode  = os.environ.get("MODE", "register")
@@ -93,48 +113,69 @@ if not sid:
 
 now = int(time.time())
 
-def load():
-    try:
-        with open(reg, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except Exception:
-        return {}
-
-def save(d):
-    tmp = "%s.tmp.%d" % (reg, os.getpid())
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(d, f)
-        os.replace(tmp, reg)  # atomic on POSIX and Windows (same filesystem)
-    except Exception:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-
-d = load()
-# Prune anything we can no longer trust as live BEFORE any decision uses it.
-d = {k: v for k, v in d.items()
-     if isinstance(v, dict) and (now - int(v.get("heartbeat", 0) or 0)) <= stale}
-
-if mode == "deregister":
-    d.pop(sid, None)
-    save(d)
+sys.path.insert(0, os.environ.get("REG_LIB", ""))
+try:
+    import jsonstate as js
+except Exception as e:
+    sys.stderr.write("session-registry: cannot import lib/jsonstate.py (%s) -- "
+                     "registry NOT updated.\n" % e)
     sys.exit(0)
 
-# Upsert self for register / heartbeat.
-me = d.get(sid, {})
-if not isinstance(me, dict):
-    me = {}
-me.setdefault("started", now)
-me.setdefault("repos", {})           # {repo_toplevel: last_active_ts} — filled by worktree-guard.sh
-me["cwd"] = cwd
-me["heartbeat"] = now
-d[sid] = me
-save(d)
+def update():
+    """One read-modify-write. Call only while holding the registry lock.
+    Returns the registry as written, or None when the write was skipped."""
+    try:
+        d = js.load(reg)
+    except js.Corrupt as e:
+        # Writers serialise on the lock and replace atomically, so a damaged file
+        # came from outside that protocol. Move it aside rather than overwrite it
+        # (the evidence is kept and nothing is erased unannounced), then start
+        # fresh so one bad file cannot disable the registry for good.
+        q = "%s.corrupt.%d" % (reg, now)
+        try:
+            os.replace(reg, q)
+        except Exception:
+            sys.stderr.write("session-registry: %s is unreadable (%s) and could not be "
+                             "moved aside -- registry NOT updated.\n" % (reg, e))
+            return None
+        msg = ("session-registry: %s was unreadable (%s); moved it aside to %s and "
+               "started fresh -- peer sessions reappear at their next heartbeat."
+               % (reg, e, q))
+        sys.stderr.write(msg + "\n")
+        if mode == "register":
+            print(msg)  # SessionStart stdout reaches the session; stderr may not
+        d = {}
 
-if mode != "register":
+    # Prune anything we can no longer trust as live BEFORE any decision uses it.
+    d = {k: v for k, v in d.items()
+         if isinstance(v, dict) and (now - int(v.get("heartbeat", 0) or 0)) <= stale}
+
+    if mode == "deregister":
+        d.pop(sid, None)
+        js.save(reg, d)
+        return d
+
+    # Upsert self for register / heartbeat.
+    me = d.get(sid, {})
+    if not isinstance(me, dict):
+        me = {}
+    me.setdefault("started", now)
+    me.setdefault("repos", {})       # {repo_toplevel: last_active_ts} — filled by worktree-guard.sh
+    me["cwd"] = cwd
+    me["heartbeat"] = now
+    d[sid] = me
+    js.save(reg, d)
+    return d
+
+try:
+    with js.locked(reg, timeout=5, stale=30):
+        d = update()
+except js.LockTimeout:
+    sys.stderr.write("session-registry: registry lock is busy -- this update was "
+                     "skipped; the next heartbeat retries.\n")
+    sys.exit(0)
+
+if d is None or mode != "register":
     sys.exit(0)
 
 # --- register: warn if another live session shares this workspace -------------

@@ -91,6 +91,10 @@ cp "$LIB_DIR/resolve-python.sh" "$FIX/lib/"
 # module, which is what turns "the module is missing" from an untested accident
 # into an asserted behaviour.
 cp "$LIB_DIR/cmdparse.py" "$FIX/lib/"
+# lib/jsonstate.py carries the registry lock and load/save. Without it the hook
+# announces the missing module and skips the registry touch, so S1/S2 would fail
+# for a reason unrelated to their subject.
+cp "$LIB_DIR/jsonstate.py" "$FIX/lib/"
 REG="$FIX/hooks/.session-registry.json"
 
 # An ambient HOOK_PYTHON pin is honoured by resolve_python BEFORE any PATH
@@ -260,6 +264,41 @@ sys.exit(0 if any(n(k)==n(want) for k in keys) else 1)
 else
   echo "  FAIL  S2 repo path missing from the registry entry (wanted $EXPECT_TOP)"; fail=$((fail+1))
 fi
+
+# --- L. the registry lock and a damaged registry (#4) ------------------------
+# The registry touch runs under the registry lockfile. A held lock makes the
+# touch wait briefly and skip, and it must never change the verdict: this guard
+# is advisory, and a busy registry is not a reason to block or to allow anything
+# it would not otherwise. L5 is the control for L2: the same command with the
+# lock free does write.
+rm -f "$REG" "$REG.lock"
+printf '4242 1700000000\n' > "$REG.lock"
+out="$( cd "$FIX" && printf '%s' "$(payload "git -C $CLEAN_W status" "$CLEAN_W" "sess-locked")" | bash "$HOOK" 2>/dev/null )"
+rc=$?
+check "L1 held registry lock: git status is still allowed" "SILENT/0" "$(verdict "$out")/$rc"
+check "L2 ...and the registry is not written" NO \
+  "$(grep -q 'sess-locked' "$REG" 2>/dev/null && echo YES || echo NO)"
+check "L3 ...and the holder's lockfile is left in place" '4242 1700000000' "$(cat "$REG.lock" 2>/dev/null)"
+check "L4 held registry lock: a dirty pull still asks (verdict unchanged)" ASK \
+  "$(verdict "$(run "$(payload "git -C $DIRTY_W pull" "" "sess-locked")")")"
+rm -f "$REG.lock"
+run "$(payload "git -C $CLEAN_W status" "$CLEAN_W" "sess-locked")" >/dev/null 2>&1
+check "L5 lock free: the same command records the session (control for L2)" YES \
+  "$(grep -q 'sess-locked' "$REG" 2>/dev/null && echo YES || echo NO)"
+
+# L6/L7: a registry that cannot be parsed is left exactly as it is. Overwriting
+# it with this session alone is how every peer used to vanish.
+printf 'garbage {"peer": not json' > "$REG"
+cp "$REG" "$FIX/expected-corrupt"
+err="$( cd "$FIX" && printf '%s' "$(payload "git -C $CLEAN_W status" "$CLEAN_W" "sess-c")" | bash "$HOOK" 2>&1 >/dev/null )"
+if cmp -s "$FIX/expected-corrupt" "$REG"; then
+  echo "  PASS  L6 an unreadable registry is not overwritten"; pass=$((pass+1))
+else
+  echo "  FAIL  L6 the unreadable registry was overwritten"; fail=$((fail+1))
+fi
+check "L7 ...and the hook says so on stderr" YES \
+  "$(printf '%s' "$err" | grep -q 'unreadable' && echo YES || echo NO)"
+rm -f "$REG" "$REG.lock"
 
 # --- F. payload shape --------------------------------------------------------
 PY="$(command -v python3 || command -v python || true)"

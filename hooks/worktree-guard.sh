@@ -14,7 +14,10 @@
 # Shares one registry with session-registry.sh:  hooks/.session-registry.json
 # (override with HOOK_SESSION_REGISTRY). It is machine-local runtime state, not
 # source — GITIGNORE IT, along with the `.session-registry.json.tmp.*` files the
-# atomic write leaves behind if a write is interrupted.
+# atomic write leaves behind if a write is interrupted, the
+# `.session-registry.json.lock` file that serialises writers, and any
+# `.session-registry.json.corrupt.<epoch>` file session-registry.sh moves a
+# damaged registry to. The write goes through lib/jsonstate.py (see job 1 below).
 #
 # === Posture: ADVISORY, FAIL-OPEN ===
 # This is a safety convenience, not a security gate (the opposite of
@@ -153,37 +156,45 @@ if not top:
 now = int(time.time())
 
 # --- (1) touch this session's per-repo activity into the registry (advisory) ---
-if sid and reg:
-    def _load():
-        try:
-            with open(reg, "r", encoding="utf-8") as f:
-                x = json.load(f)
-            return x if isinstance(x, dict) else {}
-        except Exception:
-            return {}
-    def _save(x):
-        tmp = "%s.tmp.%d" % (reg, os.getpid())
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(x, f)
-            os.replace(tmp, reg)
-        except Exception:
+# Same lock and the same rule as session-registry.sh, via lib/jsonstate.py: the
+# read-modify-write runs under the registry lockfile, and a registry that cannot
+# be parsed is left alone rather than overwritten with this session alone (which
+# would erase every peer). Recovering a damaged registry is session-registry.sh's
+# job; this hook runs on every git command and only skips its stamp.
+#
+# Every skip is advisory: the stamp is refreshed on the next git command, and the
+# verdict below never depends on it.
+def _touch_registry():
+    try:
+        import jsonstate as js
+    except Exception as e:
+        sys.stderr.write("worktree-guard: cannot import lib/jsonstate.py (%s) -- "
+                         "session registry not updated.\n" % e)
+        return
+    try:
+        with js.locked(reg, timeout=3, stale=30):
             try:
-                os.remove(tmp)
-            except Exception:
-                pass
-    rd = _load()
-    rd = {k: v for k, v in rd.items()
-          if isinstance(v, dict) and (now - int(v.get("heartbeat", 0) or 0)) <= stale}
-    me = rd.get(sid) if isinstance(rd.get(sid), dict) else {}
-    me.setdefault("started", now)
-    me["cwd"] = cwd
-    me["heartbeat"] = now
-    repos = me.get("repos") if isinstance(me.get("repos"), dict) else {}
-    repos[top] = now
-    me["repos"] = repos
-    rd[sid] = me
-    _save(rd)
+                rd = js.load(reg)
+            except js.Corrupt as e:
+                sys.stderr.write("worktree-guard: session registry is unreadable (%s) -- "
+                                 "left as is, not overwritten.\n" % e)
+                return
+            rd = {k: v for k, v in rd.items()
+                  if isinstance(v, dict) and (now - int(v.get("heartbeat", 0) or 0)) <= stale}
+            me = rd.get(sid) if isinstance(rd.get(sid), dict) else {}
+            me.setdefault("started", now)
+            me["cwd"] = cwd
+            me["heartbeat"] = now
+            repos = me.get("repos") if isinstance(me.get("repos"), dict) else {}
+            repos[top] = now
+            me["repos"] = repos
+            rd[sid] = me
+            js.save(reg, rd)
+    except js.LockTimeout:
+        pass  # lock busy: skip this stamp
+
+if sid and reg:
+    _touch_registry()
 
 # --- (2) dirty-tree guard on tree-mutating ops --------------------------------
 # Recovery sub-commands (--abort/--continue/--quit/--skip) are how you reach a
