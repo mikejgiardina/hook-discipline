@@ -428,6 +428,7 @@ kind.
 lib/resolve-python.sh      interpreter resolution that probes before accepting
 lib/payload.sh             stdin payload reader; the || true that keeps hooks alive
 lib/cmdparse.py            heredoc stripping, quote-aware command anchoring, git globals, MSYS paths
+lib/jsonstate.py           locked read-modify-write of a shared JSON state file; corrupt is not empty
 
 hooks/secrets-scan.sh      fail-closed: blocks commits staging credentials
 hooks/skip-ci-guard.sh     fail-open-but-loud: keeps CI-skip markers off feature branches
