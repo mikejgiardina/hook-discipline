@@ -35,7 +35,7 @@
 # Format: <suite filename><TAB><floor>
 test-closing-refs.sh	44
 test-payload-contract.sh	18
-test-resolve-python.sh	17
+test-resolve-python.sh	36
 test-secrets-scan.sh	64
 test-session-registry.sh	55
 test-skip-ci-guard.sh	58
