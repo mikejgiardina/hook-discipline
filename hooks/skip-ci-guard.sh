@@ -1,56 +1,22 @@
 #!/usr/bin/env bash
 # skip-ci-guard.sh — PreToolUse(Bash) hook. Keeps the CI-skip marker off FEATURE
-# BRANCH commits, where it silently disables the only CI a pull request gets.
+# BRANCH commits, where it suppresses the `pull_request` run; merges to the
+# default branch also carry the marker, so such a PR gets no CI anywhere.
 #
-# === What went wrong ===
-# The convention is "put the skip marker on the commit subject so mechanical churn
-# does not burn Actions minutes". Applied literally while committing on a feature
-# branch, it suppresses the `pull_request` trigger too — so the PR never runs. And
-# because merges to the default branch also carry the marker, such a PR gets NO CI
-# anywhere: not on the branch, not post-merge.
-#
-# A retrospective check found most branches in a sample had no CI runs at all. One
-# change reached the default branch completely untested; its platform-specific
-# failure was not post-merge drift, it had never been tested at all, and only
-# surfaced because a later PR happened to pull the new test into its own run. The
-# post-mortem at the time attributed it to "per-PR-green != post-merge-green" —
-# that was an assumption, and it was wrong.
-#
-# === The rule this enforces ===
 #   feature branch commit  -> marker FORBIDDEN (this hook denies it)
 #   default branch commit  -> marker fine; mechanical churn should not run CI
 #   merge commit           -> marker wanted; add it to the merge subject
 #
-# So the marker is not being abolished, only moved to the two places where it costs
-# nothing. The PR run takes a few minutes and was always the intended gate — this
-# just makes it actually happen.
+# The whole command is scanned and heredocs are NOT stripped: the message can
+# arrive as -m, repeated -m, --message=, or a heredoc body via `-F -`.
+# A commit that merely WRITES ABOUT the marker is denied on purpose: GitHub
+# matches the token anywhere in the message, so it does skip itself.
 #
-# === Why a whole-command scan, and why that is not sloppy ===
-# The message can arrive as -m, repeated -m, --message=, or a heredoc body via
-# `-F -`. Heredocs are therefore NOT stripped here (unlike guards that match on
-# dangerous verbs, where a heredoc body is prose and pure noise) — for
-# `git commit -F -` the heredoc IS the message. Scanning the whole command
-# over-matches in principle; in practice a skip token inside a `git commit`
-# invocation is essentially always destined for the message.
+# Fail-open, but LOUD: if the branch cannot be determined it says so on stderr
+# and allows. Blocking goes through stdout JSON permissionDecision:deny at exit 0,
+# because the settings wiring's `|| true` swallows exit codes.
 #
-# It also over-matches on purpose in one real case: a commit that merely WRITES
-# ABOUT the marker. GitHub matches these tokens anywhere in the message, subject or
-# body, so such a commit genuinely does skip itself — the change that introduced
-# this hook produced no run for exactly that reason, twice, and stripping the
-# literal token from the body made CI fire immediately with the same diff. Denying
-# it is correct, not a false positive. This is the same class as a gate whose own
-# introducing commit disables it; the fix there was to make the escape hatch a
-# structural git TRAILER rather than an inline token, and this deny message points
-# at the same shape.
-#
-# === Posture: fail-open, but LOUD ===
-# If the branch cannot be determined the hook says so on stderr and allows — a
-# degraded toolchain must not stop committing.
-#
-# Blocking goes through stdout JSON permissionDecision:deny at exit 0, because the
-# settings wiring's `|| true` swallows exit codes.
-#
-# === Escape hatch ===
+# Escape hatch:
 #   HOOK_ALLOW_SKIP_CI=1   prefix the command; use when you genuinely intend a
 #                          branch commit to skip CI and accept it is untested.
 set -uo pipefail

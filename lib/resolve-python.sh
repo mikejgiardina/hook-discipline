@@ -1,40 +1,11 @@
 #!/usr/bin/env bash
 # resolve-python.sh — shared interpreter resolver. SOURCE it, don't run it.
 #
-# === Why this exists ===
-# Every python-using hook in this layer once carried the same line:
-#
-#   PY="$(command -v python3 || command -v python || true)"
-#
-# The stated intent, per the comment each copy carried, was "python3-first so
-# this resolves on macOS, which has no bare `python`". That reasoning is sound
-# and is preserved below. The unstated assumption is not: the expression treats
-# `command -v python3` SUCCEEDING as proof that python3 RUNS.
-#
-# On Windows 11 that assumption is false. The OS ships an App-Execution-Alias
-# stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe which prints a
-# Microsoft Store advertisement and exits 49. Real Python ships python.exe and
-# no python3.exe. So on a machine with a perfectly good Python installed:
-#
-#   command -v python3     -> SUCCEEDS  (it resolves the stub)
-#   `|| command -v python` -> never fires, because the left side succeeded
-#   [ -z "$PY" ]           -> false, because PY is non-empty
-#
-# PY ends up non-empty and non-functional, and every downstream guard that tests
-# for emptiness waves it through. The hook that found this fails CLOSED by
-# design, so the observed symptom was every commit on the machine being blocked
-# — by an error message naming the secrets scanner rather than the toolchain.
-#
-# The blast radius was wider than the one hook, and the reason is worth keeping
-# in mind when you write a pre-filter: that scanner pre-filters on the substring
-# `commit`, so any shell command merely CONTAINING that word was routed into the
-# broken path and denied too. That included the commands someone would naturally
-# reach for to diagnose it.
-#
-# === The rule this encodes ===
-# `command -v` proves a NAME RESOLVES. It does not prove the thing RUNS. On
-# Windows the two come apart routinely, and not only for python — the same shape
-# turned up three times on one box:
+# `command -v` proves a NAME RESOLVES, not that it RUNS. Windows 11 ships an
+# App-Execution-Alias stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python3.exe
+# that prints a Microsoft Store advertisement and exits 49, while real Python
+# ships python.exe and no python3.exe, so `command -v python3 || command -v
+# python` yields a non-empty, non-functional PY. The same shape applies to bash:
 #
 #   python3  -> WindowsApps alias stub                -> exits 49 with a Store ad
 #   bash     -> WindowsApps WSL alias, no distro      -> execvpe failure
@@ -45,18 +16,12 @@
 # So: probe every candidate before accepting it. Ordering stays python3-first,
 # which is what keeps stock macOS (no bare `python`) working.
 #
-# Anything a script resolves via `command -v` and then EXECUTES wants the same
-# treatment. The probe is the cheap half; remembering to doubt the resolver is
-# the expensive half.
-#
 # === Contract ===
 #   resolve_python   -> echoes an interpreter that answered `--version` with
 #                       "Python 3", and returns 0.
 #                       Echoes NOTHING and returns 1 when none does.
 #
-# Callers keep their existing posture by wrapping the call, so converting a call
-# site is a one-expression diff and the fail-open/fail-closed choice each hook
-# already made is preserved verbatim:
+# Callers keep their own fail-open/fail-closed posture by wrapping the call:
 #
 #   PY="$(resolve_python || echo python)"   # last-resort literal (advisory hooks)
 #   PY="$(resolve_python || true)"          # then test [ -z "$PY" ] and decide

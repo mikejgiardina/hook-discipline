@@ -7,22 +7,16 @@
 # filename check only; it does not read file contents.
 #
 # === Why this is jq-free ===
-# An earlier version of this hook depended on `jq` for BOTH its input read (`jq -r
-# '.tool_input.command'`) and its decision emit (`jq -n '{...}'`). `jq` is not
-# installed on every machine this runs on, and this hook layer is deliberately
-# jq-free so the same files work on a Windows box with only Git-Bash as well as on
-# macOS and Linux. Every jq call errored; with wiring that swallowed errors
-# (`... || true`) the hook FAILED OPEN — silently allowing every commit,
-# including ones staging secrets. That is the failure this file is shaped around,
-# and it is why the posture below is inverted.
+# `jq` is not installed on every machine this runs on, and this hook layer is
+# deliberately jq-free so the same files work on a Windows box with only Git-Bash
+# as well as on macOS and Linux. A jq-based version errored and, with wiring that
+# swallowed errors (`... || true`), FAILED OPEN.
 #
-# === Empirically verified on a real build, not assumed ===
+# === Verified on a real build ===
 #   * PreToolUse(Bash) delivers its payload as JSON on STDIN, command at the NESTED
-#     key  .tool_input.command .  Command hooks receive their input on stdin only;
-#     no environment variable carries it (see lib/payload.sh for the history).
-#   * The hook's cwd is whatever the session was started in. That may be a
-#     workspace root holding several checkouts and not itself a git repo, in which
-#     case a bare `git diff --cached` sees nothing. We resolve the target repo from
+#     key  .tool_input.command .  No environment variable carries it.
+#   * The hook's cwd may be a workspace root that is not itself a git repo, where
+#     a bare `git diff --cached` sees nothing. We resolve the target repo from
 #     the command's `cd <dir>` / `git -C <dir>` and the payload cwd.
 #   * Blocking goes through stdout JSON  permissionDecision:deny  (exit 0). Exit
 #     code 2 would also block, but a `|| true` in the wiring swallows exit codes,
@@ -30,7 +24,6 @@
 #
 # === Posture: FAIL CLOSED ===
 # A security gate must fail closed: if it cannot PROVE a commit is safe, it blocks.
-# The original jq failure failed OPEN silently; that direction is now inverted.
 #   * python-free fast pre-filter: if the RAW payload contains no "commit" substring
 #     the command cannot be a git commit -> allow without touching the toolchain
 #     (so a degraded toolchain never blocks unrelated Bash commands). An EMPTY
@@ -43,9 +36,7 @@
 #     python-free printf, so the block fires even when python itself is the
 #     broken dependency.
 #   * Wiring: examples/settings.json runs this hook bare, with no `2>/dev/null`
-#     and no `|| true`. Either way the deny survives, since it is stdout JSON at
-#     exit 0. What matters is not discarding stderr, so that an unexpected crash
-#     before a deny is emitted is VISIBLE rather than silent.
+#     and no `|| true`, so that a crash before a deny is emitted is VISIBLE.
 #
 # === What "the files the commit would include" means ===
 # The hook is evaluated BEFORE the command runs. For `git add X && git commit`,
@@ -76,16 +67,13 @@ else
   PAYLOAD=$(cat 2>/dev/null || echo "")
 fi
 
-# Empty payload: there is no command to judge. Allowed, as before, but said out
-# loud so that a wiring fault that delivers nothing is distinguishable from a
-# clean result.
 if [ -z "$PAYLOAD" ]; then
   echo "secrets-scan: received an empty payload; nothing was checked." >&2
   exit 0
 fi
 
 # Fast pre-filter on the RAW payload. No "commit" anywhere -> cannot be a git commit
-# -> allow (and don't burden unrelated commands with the toolchain checks below).
+# -> allow.
 case "$PAYLOAD" in
   *commit*) ;;
   *) exit 0 ;;
@@ -93,11 +81,9 @@ esac
 
 # --- Commit-shaped from here. FAIL CLOSED on any inability to verify. ----------
 
-# python unavailable while git present is the exact dangerous case the original
-# hook failed open on. Block; the operator can fix the toolchain or unstage by hand.
+# python unavailable -> block; the operator can fix the toolchain or unstage by hand.
 # Interpreter via lib/resolve-python.sh: `command -v` proves a name resolves, not
-# that it RUNS (Windows ships a dead python3 alias stub). The full narrative lives
-# in that file.
+# that it RUNS (Windows ships a dead python3 alias stub).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/resolve-python.sh"
 PY="$(resolve_python || true)"
 if [ -z "$PY" ]; then
@@ -125,20 +111,13 @@ fi
 # Its exit code separates a clean run from a crash.
 #
 # === Why the source goes into a variable instead of straight down a pipe ===
-# The obvious form is `RESULT=$("$PY" - <<'PY' ... PY)` — a heredoc feeding a
-# command inside a command substitution. Every bash 4+ parses it. **Stock macOS
-# ships bash 3.2, whose parser cannot handle a heredoc nested inside `$( )`.**
-#
-# The failure is worth describing because it does not point at itself: bash 3.2
-# reports a syntax error on an EARLIER line, near whichever token it choked on
-# while unwinding — here, an innocent and correctly-quoted string several lines
-# above the actual heredoc. Reading that message leads you to rewrite a line that
-# was never wrong.
+# Stock macOS bash 3.2 cannot parse a heredoc nested inside `$( )`, and reports
+# the syntax error on an EARLIER, innocent line.
 #
 # `read -r -d ''` takes the heredoc on a SIMPLE command, which every bash parses,
 # and `-c` then hands the source to python. `read -d ''` returns non-zero when it
 # hits EOF without the delimiter — which is always, here — so `|| true` is
-# required and is not defensive clutter.
+# required.
 IFS='' read -r -d '' PY_RESOLVE_TARGET <<'PY' || true
 import os, re, json, shlex
 
@@ -471,8 +450,7 @@ if [ -n "$ADD_LINES" ]; then
   # as new or newer is "racily clean" and gets its content re-read. A plain copy
   # stamps the scratch index with the current time, which makes every entry look
   # older than it, so a same-size edit made in the same timestamp tick as the
-  # last index write reads as unchanged and `add -u` skips it. Measured: with a
-  # plain copy, `commit -a` over such an edit was ALLOWED. If -p ever loses
+  # last index write reads as unchanged and `add -u` skips it. If -p ever loses
   # precision, the copy gets an OLDER stamp, which only makes git re-check more.
   if [ -f "$REAL_INDEX" ]; then
     if ! cp -p "$REAL_INDEX" "$SIM_INDEX" 2>/dev/null; then
@@ -540,9 +518,8 @@ SECRETS=$(printf '%s\n' "$NAMES" | grep -Ei "$SECRET_RE" | grep -Evi "$EXCLUDE_R
 if [ -n "$SECRETS" ]; then
   LIST=$(printf '%s' "$SECRETS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')
   REASON="[SECRETS SCAN] blocked this commit. It would include file(s) whose name matches a secrets pattern (env files, *.key, *.pem, *.p12, *.pfx, *.jks, SSH private keys, credentials.json, secrets.json): ${LIST}. Move them out of the repository, add them to .gitignore, and make sure they are not staged (git -C \"${TOP}\" restore --staged <file>) before committing."
-  # python is guaranteed present here (it answered --version above) -> json.dumps
-  # for safe escaping of the file list + path. If it somehow yields nothing, fall
-  # back to a plain deny so a detected secret is NEVER allowed through (fail closed).
+  # json.dumps for safe escaping of the file list + path. If it yields nothing,
+  # fall back to a plain deny so a detected secret is NEVER allowed through.
   # Same bash 3.2 constraint as above: no heredoc inside $( ).
   IFS='' read -r -d '' PY_DENY <<'PY' || true
 import os, json

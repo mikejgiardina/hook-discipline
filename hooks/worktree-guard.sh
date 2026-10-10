@@ -3,12 +3,10 @@
 #
 #   1. TOUCH the live-session registry with this session's per-repo activity, so
 #      another session's SessionStart warning can say *which* repos are contended.
-#   2. GUARD tree-mutating git ops on a DIRTY working tree. `git pull` / `git
-#      merge` / `git rebase` / `gh pr merge` onto uncommitted work is the
-#      clobber/conflict risk this pair of hooks exists for. On a dirty tree it asks
-#      the agent to commit-to-a-branch (or stash) and retry — "surface +
-#      resolve-then-retry," not a dumb forbid. The op passes automatically once the
-#      tree is clean.
+#   2. GUARD tree-mutating git ops on a DIRTY working tree. On `git pull` / `git
+#      merge` / `git rebase` / `gh pr merge` onto uncommitted work it asks the
+#      agent to commit-to-a-branch (or stash) and retry. The op passes
+#      automatically once the tree is clean.
 #
 # === State file ===
 # Shares one registry with session-registry.sh:  hooks/.session-registry.json
@@ -17,23 +15,19 @@
 # atomic write leaves behind if a write is interrupted, the
 # `.session-registry.json.lock` file that serialises writers, and any
 # `.session-registry.json.corrupt.<epoch>` file session-registry.sh moves a
-# damaged registry to. The write goes through lib/jsonstate.py (see job 1 below).
+# damaged registry to. The write goes through lib/jsonstate.py.
 #
 # === Posture: ADVISORY, FAIL-OPEN ===
-# This is a safety convenience, not a security gate (the opposite of
-# secrets-scan.sh, which fails closed). Any "can't evaluate" branch — no python,
-# unparseable payload, target isn't a git work tree, `git status` errors — ALLOWS
-# the command. A worktree guard that blocked pulls on a degraded toolchain would be
-# worse than the problem it solves.
+# Not a security gate (secrets-scan.sh fails closed). Any "can't evaluate"
+# branch — no python, unparseable payload, target isn't a git work tree,
+# `git status` errors — ALLOWS the command.
 #
 #   Default decision on a dirty mutating op = "ask" (warn-first, user confirms).
-#   Set HOOK_WORKTREE_HARDBLOCK=1 to escalate it to "deny". Off by default on
-#   purpose: during the incident this guard was written for, a hard block would
-#   have made the hand-reconciliation that followed strictly worse.
+#   Set HOOK_WORKTREE_HARDBLOCK=1 to escalate it to "deny".
 #
-# jq-free (python for JSON), matching the rest of the hooks, so the same file works
-# on a Windows box with only Git-Bash. Reads the command at .tool_input.command on
-# stdin (PreToolUse does NOT set $CLAUDE_TOOL_INPUT — verified, see secrets-scan.sh).
+# jq-free (python for JSON), so it works on Windows with only Git-Bash. Reads the
+# command at .tool_input.command on stdin (PreToolUse does NOT set
+# $CLAUDE_TOOL_INPUT — see secrets-scan.sh).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

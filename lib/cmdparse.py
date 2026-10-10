@@ -130,9 +130,7 @@ def strip_heredocs(text):
 # Command position only.
 #
 # Backtick is deliberately NOT a valid prefix. A verb following a backtick is
-# overwhelmingly a markdown code span in prose, and treating it as a command
-# position is a reliable source of false positives in any repo whose
-# documentation discusses shell commands.
+# overwhelmingly a markdown code span in prose.
 CMD_START = r"(?:^|[;|&\n(]|\$\(|\bdo\b|\bthen\b|\belse\b|\{)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
 
 
@@ -243,19 +241,12 @@ def scannable(cmd):
 # native Windows interpreter must convert it first. `git -C /d/proj/x` fails with
 # `rc=128, cannot change to`; `git -C D:/proj/x` succeeds.
 #
-# Why this bites one guard and not its siblings is a precise boundary, worth
-# stating so the next author does not have to rediscover it:
-#
 #   * A path-shaped value passed as a STANDALONE environment variable is
 #     auto-converted by MSYS on the way to a native binary. `FOO="$SCRIPT_DIR"`
 #     arrives in python already as `D:/...`, which is why an env-var-based
 #     sys.path bootstrap works and needs nothing from this function.
 #   * A path EMBEDDED IN A STRING is not converted. The hook payload is JSON, so
 #     `/d/proj/x` sitting inside `tool_input.command` arrives verbatim.
-#
-# So: env-var paths are already fine; paths parsed out of the command text are
-# not. Three separate guards hit this independently before it was centralised
-# here, which is the argument for it living in one place.
 _MSYS_DRIVE = re.compile(r"^/([A-Za-z])/(.*)$")
 _CYGDRIVE = re.compile(r"^/cygdrive/([A-Za-z])/(.*)$")
 

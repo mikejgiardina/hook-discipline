@@ -15,38 +15,17 @@
 #   HOOK_TERM_REGISTRY=/path/to/private/terms.json
 #
 # === Why this is a WARNING and not a gate ===
-# Because the property it wants to check is not the property it can see. "Will
-# this file be published" is a fact about a remote and a deploy pipeline. A
-# write-time hook only knows a path. Everything below is an approximation of a
-# question it structurally cannot answer, and it is labelled as one so nobody
-# mistakes a clean run for clearance.
-#
-# The record on that is not theoretical. Four separate outward-facing surfaces
-# were each missed by a hand-maintained path glob, one after another:
-#
-#   1. a build directory inside an otherwise-private repo
-#   2. a public site repo added later and never added to the glob
-#   3. dashboards that carried their audience marker in the FILENAME
-#      (`*_showcase.html`) rather than in any directory segment, so a
-#      directory-only pattern matched none of them
-#   4. a directory whose name was plural (`grants/`) where the pattern was
-#      singular (`grant/`) — one character, total coverage loss, silent
-#
-# Every one of those reported success on every write. That is the failure mode
-# worth naming: a scoping filter that matches nothing is indistinguishable from
-# a scan that found nothing. Both print the same amount of output, which is none.
-#
-# So treat this as an early warning that widens over time, and put the real gate
-# where the irreversible act happens — at the push or the merge that deploys —
-# where the remote can actually be resolved.
+# "Will this file be published" is a fact about a remote and a deploy pipeline.
+# A write-time hook only knows a path, so a clean run is not clearance: a scoping
+# filter that matches nothing is indistinguishable from a scan that found
+# nothing. Put the real gate at the push or the merge that deploys, where the
+# remote can actually be resolved.
 #
 # === Ordering: exclusions come FIRST, deliberately ===
 # The `case` below excludes internal paths before it tests the outward-facing
-# patterns. That ordering is load-bearing. An internal dashboard that renders
-# your own private vocabulary will hit every term in the registry, every time,
-# forever. Warning on it is the cry-wolf failure that gets a check switched off
-# entirely — at which point it protects nothing. A noisy control is a control
-# with a short life.
+# patterns. An internal dashboard that renders your own private vocabulary will
+# hit every term in the registry, every time; warning on it is the cry-wolf
+# failure that gets a check switched off entirely.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,12 +36,9 @@ FILE="$(hook_file_path "$(hook_payload)")"
 [ -z "${FILE}" ] && exit 0
 [ ! -f "${FILE}" ] && exit 0
 
-# No interpreter is resolved anywhere in this file, and that is intentional.
-# The scan below is pure grep/sed/tr. An earlier version resolved a python
-# interpreter at the top, above the scope filter, for a variable nothing further
-# down referenced — roughly 470ms on every write to every file in the project,
-# for a hook that ends up scanning a handful of paths. If you ever genuinely
-# need an interpreter here, resolve it BELOW the scope `case`, not above it.
+# No interpreter is resolved anywhere in this file, and that is intentional:
+# resolving one costs roughly 470ms on every write. If you ever genuinely need
+# an interpreter here, resolve it BELOW the scope `case`, not above it.
 
 # Normalise separators and case for matching.
 PATH_LC="$(printf '%s' "${FILE}" | tr '\\' '/' | tr '[:upper:]' '[:lower:]')"
@@ -73,17 +49,13 @@ case "${PATH_LC}" in
     exit 0
     ;;
   # --- outward-facing directory segments -----------------------------------
-  # EDIT THIS LIST. It is a starting point, not a specification, and the header
-  # above is the argument for why no such list is ever finished. Note that both
-  # `grant/` and `grants/` are present: a singular-only pattern once lost total
-  # coverage of a live directory because of the missing character, silently.
+  # EDIT THIS LIST. It is a starting point, not a specification. Note that both
+  # `grant/` and `grants/` are present: a singular-only pattern misses the plural.
   */public/*|*/showcase/*|*/investor/*|*/grant/*|*/grants/*|*sanitized*)
     ;;
   # --- outward-facing FILENAME markers -------------------------------------
-  # Not just directory segments. This is what closes the class for a genuinely
-  # outward-facing `*_showcase.html` written anywhere else — the exact gap that
-  # left a set of dashboards uncovered, because they carried the marker in the
-  # filename and every pattern was a directory glob.
+  # Not just directory segments: covers an outward-facing `*_showcase.html`
+  # written anywhere else, which carries the marker in the filename.
   *showcase*.html|*investor*.html|*public*.html)
     ;;
   *)
@@ -96,18 +68,10 @@ TERMS_FILE="${HOOK_TERM_REGISTRY:-$ROOT/examples/terms.example.json}"
 [ -f "${TERMS_FILE}" ] || exit 0
 
 # Extract terms with grep/sed rather than jq — jq is not present everywhere these
-# hooks run, and a hook that silently degrades on a missing dependency is the
-# failure mode this layer exists to prevent. `tr -d '\r'` defends against a
-# registry checked out with Windows line endings.
+# hooks run. `tr -d '\r'` defends against a registry checked out with Windows
+# line endings.
 #
-# ALIASES ARE READ TOO, and this is not an optional refinement. An earlier
-# version extracted only `"term"`, so every alias in the registry had never been
-# scanned by anything. Aliases are frequently the MORE likely phrasing in prose —
-# a person writing a sentence reaches for the natural wording, not the canonical
-# label — so the registry was advertising coverage the scanner did not implement.
-# Same shape as the scoping problem one layer down: the check ran, found nothing,
-# exited clean, and "scanned and clean" was indistinguishable from "never looked
-# for that".
+# ALIASES ARE READ TOO: aliases are frequently the MORE likely phrasing in prose.
 #
 # If you run a second gate against the same registry, keep the two extractions
 # byte-identical so they can never disagree about what a term is.
@@ -135,13 +99,10 @@ cannot_scan() {
 FILE_LC=$(tr '[:upper:]' '[:lower:]' < "${FILE}" 2>/dev/null) \
   || cannot_scan "the file could not be read"
 
-# ONE awk pass, not a loop per term. The loop forked about five processes per
-# term (case-folding the term, then `printf | grep | head`), so the cost grew
-# with the registry. On a loaded Windows box, where a single fork can take
-# hundreds of milliseconds, that was enough for hooks that run on every write to
-# pile up into fork exhaustion. The semantics are unchanged: for each term in sorted order, the
-# FIRST matching line of the case-folded file, as a fixed string, reported as
-# `  - <term>  <n>:<line>`.
+# ONE awk pass, not a loop per term: a per-term loop forks several processes per
+# term, which on a loaded Windows box piles up into fork exhaustion. For each
+# term in sorted order, the FIRST matching line of the case-folded file, as a
+# fixed string, reported as `  - <term>  <n>:<line>`.
 #   * Terms are case-folded with the SAME `tr` as the file, in one call, so
 #     the two sides cannot fold differently.
 #   * index() is a fixed-string match, which is what `grep -F` was; LC_ALL=C
@@ -173,8 +134,7 @@ HITLIST=""
 
 if [ "${HITS}" -gt 0 ]; then
   # STDOUT, not stderr. A common wiring pattern sends hook stderr to /dev/null to
-  # suppress noise; anything you actually want the operator to read has to go to
-  # stdout or it is discarded along with the noise.
+  # suppress noise.
   echo ""
   echo "TERM-SCAN WARNING — outward-facing file contains registry terms:"
   echo "    file: ${FILE}"

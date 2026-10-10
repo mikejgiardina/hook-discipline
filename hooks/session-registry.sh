@@ -5,10 +5,8 @@
 # === What this solves ===
 # Branch-per-thread isolates *branches* but not the *working tree*. When more than
 # one agent session runs against the same workspace, they share the checkouts under
-# it — and `git checkout` plus uncommitted changes are global to a tree. In
-# practice this produced commits landing on another session's branch and threads
-# split mid-commit. The fix is per-session worktrees; this registry is the
-# *warn-the-agent* half that makes the agent actually reach for one.
+# it — and `git checkout` plus uncommitted changes are global to a tree. The fix
+# is per-session worktrees; this registry is the *warn-the-agent* half.
 #
 # === State file ===
 # Shares one registry with worktree-guard.sh:  hooks/.session-registry.json
@@ -21,16 +19,14 @@
 # === Concurrency (lib/jsonstate.py) ===
 # Every session runs this hook on every turn, and worktree-guard.sh writes the
 # same file on every git command, so writers overlap routinely. Each
-# read-modify-write runs under one O_EXCL lockfile. Without it, two writers that
-# loaded the same version each wrote back only their own change, and the second
-# erased the first.
+# read-modify-write runs under one O_EXCL lockfile, so two overlapping writers
+# cannot each write back only their own change.
 #
-# A registry that exists but cannot be parsed is NOT read as empty. Reading it as
-# empty is how the next save used to erase every peer without a word. It is moved
-# aside to `<registry>.corrupt.<epoch>`, kept as evidence, and the registry starts
-# fresh, with a notice; peers reappear at their next heartbeat. Starting fresh
-# rather than refusing to write keeps one damaged file from disabling the
-# registry for every later session.
+# A registry that exists but cannot be parsed is NOT read as empty, or the next
+# save would erase every peer. It is moved aside to `<registry>.corrupt.<epoch>`,
+# kept as evidence, and the registry starts fresh, with a notice; peers reappear
+# at their next heartbeat. Starting fresh rather than refusing to write keeps one
+# damaged file from disabling the registry for every later session.
 #
 # === Modes (argv[1]) ===
 #   register    SessionStart  — prune stale entries, upsert self, and if ANOTHER
