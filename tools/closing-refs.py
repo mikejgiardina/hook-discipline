@@ -135,8 +135,7 @@ inside a test with no credentials present.
 import re
 import sys
 
-# GitHub's documented closing keywords, all of them. Getting this list from
-# memory rather than the docs is how a tool ends up silently ignoring `fixed`.
+# GitHub's documented closing keywords, all of them.
 KEYWORDS = (
     "close", "closes", "closed",
     "fix", "fixes", "fixed",
@@ -147,19 +146,9 @@ KEYWORDS = (
 # leave an `s` that then fails adjacency.
 _KW = "|".join(sorted(KEYWORDS, key=len, reverse=True))
 
-# Rules 1 + 2. `[ \t]*` never matches a newline, so a keyword cannot bind to a
-# reference on the following line -- the paragraph-boundary false positive.
-#
-# HONEST NOTE ON WHAT THIS CLAUSE ACTUALLY BUYS. It was first written `[ \t]{0,2}`
-# and the docstring called adjacency load-bearing. Mutation-testing says
-# otherwise for that particular mutation: swapping it for `\s+` leaves the whole
-# corpus green, because extract() iterates LINE BY LINE, so `\s` could never have
-# crossed a newline here anyway. The line loop is rule 2; this clause only
-# enforces "no words between the keyword and the ref", which is what actually
-# rejects `Resolves the six ... core#210`. The `{0,2}` bound was additionally too
-# tight -- it rejected `Closes    core#101` for no reason -- so it is now `*`.
-# Stating this rather than leaving a rule that reads as essential and tests as
-# inert.
+# Rule 1. extract() iterates LINE BY LINE, so the line loop is rule 2 and this
+# clause only enforces "no words between the keyword and the ref", which is what
+# rejects `Resolves the six ... core#210`.
 #
 # The owner/repo alternative is tried FIRST so `example-org/example-repo#101` is
 # not chopped into a bare `example-repo#101`; an alternation matches left to
@@ -168,9 +157,8 @@ _REF = r"(?:(?P<owner>[A-Za-z0-9][A-Za-z0-9._-]*)/(?P<repo>[A-Za-z0-9][A-Za-z0-9
 _DIRECTIVE = re.compile(r"(?<![A-Za-z0-9_])(?P<kw>%s)[ \t]*%s" % (_KW, _REF), re.IGNORECASE)
 
 # Rule 3: an unparseable directive must OPEN its line. A leading list marker or
-# open paren is allowed because `- Closes core#150` and `(closes api#151)` are
-# both ordinary ways to write a standalone directive; there is a corpus member
-# for each, which is why the paren is here rather than assumed away.
+# open paren is allowed: `- Closes core#150` and `(closes api#151)` are both
+# standalone directives.
 _LINE_INITIAL = re.compile(r"^[ \t]*(?:[-*]\s*|\(\s*)?(?:%s)[ \t]*\S" % _KW, re.IGNORECASE)
 
 # Rule 4. Bounded to the text BEFORE the keyword on that line, so a later
@@ -195,9 +183,8 @@ def _strip_markdown_noise(line):
 
 
 # A continuation reference: `Closes #120, #121` / `Fixes #1 and #2`. GitHub does
-# NOT close the trailing ones -- its docs are explicit that the keyword must be
-# repeated ("Closes #10, closes #123"). Extracted anyway, and flagged, because a
-# human plainly meant them and the verification layer reads real state.
+# NOT close the trailing ones. Extracted anyway, and flagged, so the
+# verification layer can check them.
 _CONT_REF = re.compile(r"^[ \t]*(?:,|and\b|&)[ \t]*%s" % _REF)
 
 
@@ -226,13 +213,9 @@ def extract(text, source="body"):
     for lineno, raw in enumerate(text.splitlines(), 1):
         line = _strip_markdown_noise(raw)
 
-        # Rule 3, computed ONCE per line and as a POSITION, not a boolean. The
-        # boolean form had a real bug: `fix(parser): idle-drive the queue;
-        # resolves core#73's flag` satisfies "line starts with a keyword" via the
-        # `fix(` in the conventional-commit prefix, which then licensed an
-        # unrelated mid-line `resolves core#73`. Requiring the match to BE the
-        # line-initial one is the fix, and it is why that subject is a corpus
-        # member.
+        # Rule 3, computed ONCE per line and as a POSITION, not a boolean: in
+        # `fix(parser): ...; resolves core#73's flag` the `fix(` satisfies "line
+        # starts with a keyword", so the match must BE the line-initial one.
         li = _LINE_INITIAL.match(line)
         li_start = None
         if li:
@@ -249,21 +232,10 @@ def extract(text, source="body"):
 
             kind, ref = _classify(owner, repo, prefix, num)
 
-            # Rule 3 -- standalone-directive position, for the unparseable form
-            # ONLY. See the module docstring for why bare/crossrepo refs are
-            # exempt.
-            #
-            # "Standalone" means line-initial OR opening a new sentence on that
-            # line. The second clause is not a loosening for its own sake -- it
-            # is the defect this whole file exists for, which puts three
-            # directives on one line: `Closes core#101. Closes core#102. Closes
-            # core#103.` A pure line-initial rule finds one of the three.
-            #
-            # The separator is `.` and ONLY `.`. `;` was tried and rejected
-            # against the corpus, where a semicolon would license descriptive
-            # prose as a directive on an issue that is deliberately open. `(`
-            # likewise -- `Companion to <other PR> (closes core#87)` is about
-            # what ANOTHER pull request does.
+            # Rule 3 -- standalone-directive position (line-initial OR after a
+            # `.`), for the unparseable form ONLY; see the module docstring.
+            # `(` is not a separator: `Companion to <other PR> (closes core#87)`
+            # is about what ANOTHER pull request does.
             if kind == "unparseable":
                 before = line[: m.start("kw")].rstrip()
                 if m.start("kw") != li_start and not before.endswith("."):
@@ -307,18 +279,13 @@ def extract(text, source="body"):
 
 # --------------------------------------------------------------------------
 # Corpus. Every entry reproduces the SHAPE of a site a naive proximity matcher
-# hit during the retrospective sweep, with synthetic content. Shape is what the
-# rules act on -- position on the line, what sits between keyword and reference,
-# whether a sentence boundary intervenes -- so a synthetic case exercises exactly
-# the same code path as the text it stands in for.
+# hit, with synthetic content.
 #
 # `want` lists the (kind, ref) pairs that MUST be extracted; anything else
 # extracted is a false positive and fails the run.
 #
-# Which case defends which rule is recorded in the case name, so that deleting a
-# rule tells you what you broke rather than just how many things went red. Each
-# of rules 1-4 has at least one case that goes red when that rule alone is
-# removed.
+# The case name records which rule it defends. Each of rules 1-4 has at least
+# one case that goes red when that rule alone is removed.
 # --------------------------------------------------------------------------
 CORPUS = [
     (
@@ -380,10 +347,8 @@ CORPUS = [
     ),
     (
         "R4  EXPLICIT NEGATION on a BARE ref, which rule 3 exempts",
-        # The only corpus case that isolates the negation guard. A bare `#N` is
-        # honoured mid-line by GitHub, so rule 3 does not apply and rule 4 is the
-        # only thing standing between a proximity matcher and closing the exact
-        # issue this sentence exists to protect.
+        # The only corpus case that isolates the negation guard: a bare `#N` is
+        # exempt from rule 3.
         "These changes do **not** close #64, which stays open pending review.\n",
         [],
     ),
@@ -396,17 +361,13 @@ CORPUS = [
         "--  LIST CONTINUATION: `Closes #120, #121.` closes only the first",
         # GitHub's docs require the keyword before EACH issue ("Closes #10,
         # closes #123"), so a trailing `, #121` is not a directive to the linker.
-        # Confirmed against the issue-timeline API rather than assumed: on the
-        # real pair, BOTH issues carried `commit_id: NONE` on their close events
-        # -- hand-closed by a person, minutes apart. The platform closed neither.
         "Closes #120, #121.\n",
         [("parseable", "#120"), ("list-continuation", "#121")],
     ),
     (
         "--  a closing keyword in a PR TITLE does nothing at all",
         # GitHub's linker reads the PR DESCRIPTION and the commit messages -- not
-        # the title. Both refs are reported, and both are downgraded, because the
-        # author plainly meant them and the platform will act on neither.
+        # the title. Both refs are reported, and both are downgraded.
         "Live queue visualization for the worker pool - closes #130, #131\n",
         [("title-only", "#130"), ("title-only", "#131")],
     ),
@@ -454,13 +415,8 @@ def self_test():
             print("  FAIL  %s" % name)
             print("        want: %r" % (want,))
             print("        got:  %r" % (got,))
-    # The comparison is the point of the exercise, not decoration: it is the
-    # measurement that justified rejecting a proximity matcher. Note that the
-    # corpus deliberately over-represents the controls -- real directives that
-    # a naive matcher also hits -- so its ratio is kinder than the sweep's
-    # roughly 75%. The absolute gap is the part that matters: every naive hit
-    # this matcher does not report is a wrong closure that would have been made
-    # with confidence.
+    # The corpus over-represents the controls -- real directives a naive
+    # matcher also hits -- so this ratio is kinder than the sweep's ~75%.
     real = sum(1 for _, t, _ in CORPUS for d in extract(t) if d["kind"] == "unparseable")
     print()
     print("  naive `keyword\\s+prefix#N` matcher would hit %d site(s) on this corpus;"
