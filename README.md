@@ -70,7 +70,7 @@ that produced them.
   — verify the state you wanted, not the success of the operation you ran. And
   [why the detection is the interesting half](#the-detection-is-the-interesting-half).
 - [Using these](#using-these) · [why `term-scan.sh` ships without its registry](#term-scansh-ships-without-its-registry-on-purpose)
-- [Longer write-ups](#longer-write-ups) · [Status and scope](#status-and-scope) · [License](#license)
+- [Status and scope](#status-and-scope) · [License](#license)
 
 Sections are self-contained; skipping around costs nothing.
 
@@ -177,8 +177,8 @@ and blocking would be disproportionate. See
 A check that passes tells you one specific thing. It is very easy to read it as
 telling you a much larger thing, and nothing in the output corrects you.
 
-> **"The term scan passed" means no proprietary term leaked. It does not mean the
-> numbers are sound.**
+> **"The term scan passed" means no term from your private list appeared in the
+> file it scanned. It does not mean the numbers are sound.**
 
 Those are two different assertions and only one of them was made. A fixed-string
 scanner validates *vocabulary*. It cannot see a figure caption contradicting its
@@ -430,11 +430,11 @@ lib/payload.sh             stdin payload reader; the || true that keeps hooks al
 lib/cmdparse.py            heredoc stripping, quote-aware command anchoring, git globals, MSYS paths
 lib/jsonstate.py           locked read-modify-write of a shared JSON state file; corrupt is not empty
 
-hooks/secrets-scan.sh      fail-closed: blocks commits staging credentials
+hooks/secrets-scan.sh      fail-closed: blocks commits staging credential-named files
 hooks/skip-ci-guard.sh     fail-open-but-loud: keeps CI-skip markers off feature branches
 hooks/worktree-guard.sh    advisory: guards tree-mutating git ops on a dirty tree
 hooks/session-registry.sh  tracks concurrent agent sessions sharing one working tree
-hooks/term-scan.sh         registry-driven term scanner (registry NOT included — see below)
+hooks/term-scan.sh         registry-driven confidential-term scanner (registry NOT included — see below)
 
 tools/closing-refs.py      extracts issue-closing directives from a PR body; --self-test
 
@@ -553,20 +553,18 @@ self-defeating. [`examples/terms.example.json`](examples/terms.example.json)
 gives the schema with fictional entries so the hook and its test run out of the
 box; point `HOOK_TERM_REGISTRY` at your own private file.
 
+What belongs in the registry is whatever is confidential but is not a
+credential: codenames, internal names and paths, unreleased work, the kinds of
+entry `examples/terms.example.json` shows. Credential-named files (`.env`,
+`*.pem`, `*.key`, SSH private keys, `credentials.json`) are
+[`hooks/secrets-scan.sh`](hooks/secrets-scan.sh)'s job, and it blocks on file
+names rather than warning on words. Both exist to keep private material from
+being published. They are split by how reliably each kind of leak can be
+detected and how hard it is to undo.
+
 This generalises past term scanning. The reusable artifact is nearly always the
 mechanism, not the data it operates on — and separating them at the file boundary
 is what makes the mechanism publishable at all.
-
----
-
-## Longer write-ups
-
-Two case studies cover the design decisions in more depth than a README should:
-
-- [Automation](https://mike-giardina.netlify.app/automation/) — how the layer is
-  structured and what each hook is for
-- [Enforcement](https://mike-giardina.netlify.app/enforcement/) — the failure
-  modes above, in detail, including the incidents
 
 ---
 
